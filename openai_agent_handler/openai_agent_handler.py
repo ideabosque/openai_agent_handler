@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import openai
 
 from ai_agent_handler import AIAgentEventHandler
+from silvaengine_utility import Utility
 
 
 # ----------------------------
@@ -29,7 +30,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
     """
 
     def __init__(
-        self, logger: logging.Logger, agent: Dict[str, Any], **setting: Dict[str, Any]
+        self,
+        logger: logging.Logger,
+        agent: Dict[str, Any],
+        run: Dict[str, Any],
+        **setting: Dict[str, Any],
     ) -> None:
         """
         :param logger: A logging instance for debug/info messages.
@@ -53,7 +58,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         self.accumulated_text: str = ""
         # Will hold the final output message data, if any
         self.final_output: Dict[str, Any] = {}
-        AIAgentEventHandler.__init__(self, logger, agent, **setting)
+
+        AIAgentEventHandler.__init__(self, logger, agent, run, **setting)
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
         """
@@ -61,10 +67,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         :param kwargs: Keyword arguments for the model invocation.
         :return: The response from the model.
+        :raises: Exception if model invocation fails
         """
-        variables = dict(self.model_setting, **kwargs)
-
-        return self.client.responses.create(**variables)
+        try:
+            variables = dict(self.model_setting, **kwargs)
+            return self.client.responses.create(**variables)
+        except Exception as e:
+            self.logger.error(f"Error invoking model: {str(e)}")
+            raise Exception(f"Failed to invoke model: {str(e)}")
 
     def ask_model(
         self,
@@ -82,40 +92,45 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param stream_event: An optional threading.Event to signal streaming completion.
         :return: The response ID if non-streaming, otherwise None.
         """
-        if not self.client:
-            self.logger.error("No OpenAI client provided.")
-            return None
+        try:
+            if not self.client:
+                self.logger.error("No OpenAI client provided.")
+                return None
 
-        should_stream = True if queue is not None else False
+            should_stream = True if queue is not None else False
 
-        # Add model-specific settings if provided
-        if model_setting:
-            self.model_setting.update(model_setting)
+            # Add model-specific settings if provided
+            if model_setting:
+                self.model_setting.update(model_setting)
 
-        response = self.invoke_model(
-            **{
-                "input": input_messages,
-                "stream": should_stream,
-            }
-        )
-
-        # If streaming is enabled, process chunks
-        if should_stream:
-            self.handle_stream(
-                response,
-                input_messages,
-                queue=queue,
-                stream_event=stream_event,
+            response = self.invoke_model(
+                **{
+                    "input": input_messages,
+                    "stream": should_stream,
+                }
             )
-            return None
 
-        # Otherwise, handle a normal (non-stream) response
-        for output in response.output:
-            self.handle_output(
-                output,
-                input_messages,
-            )
-        return response.id
+            # If streaming is enabled, process chunks
+            if should_stream:
+                self.handle_stream(
+                    response,
+                    input_messages,
+                    queue=queue,
+                    stream_event=stream_event,
+                )
+                return None
+
+            # Otherwise, handle a normal (non-stream) response
+            for output in response.output:
+                self.handle_output(
+                    output,
+                    input_messages,
+                )
+            return response.id
+
+        except Exception as e:
+            self.logger.error(f"Error in ask_model: {str(e)}")
+            raise Exception(f"Failed to process model request: {str(e)}")
 
     def handle_function_call(
         self,
@@ -132,68 +147,95 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param input_messages: The conversation history to be appended with function call info.
         :param queue: Queue instance if streaming is in progress (optional).
         :param stream_event: Event instance to signal completion (optional).
+        :raises ValueError: If tool_call is invalid or missing required attributes
+        :raises RuntimeError: If function execution fails
         """
-        function_call_data = {
-            "id": tool_call.id,
-            "arguments": tool_call.arguments,
-            "call_id": tool_call.call_id,
-            "name": tool_call.name,
-            "type": tool_call.type,
-            "status": tool_call.status,
-        }
+        if not tool_call or not hasattr(tool_call, "id"):
+            raise ValueError("Invalid tool_call object")
 
-        # Parse arguments (typically JSON)
         try:
-            arguments = json.loads(function_call_data.get("arguments", "{}"))
-        except Exception as e:
-            self.logger.error("Error parsing function arguments: %s", e)
-            arguments = {}
-
-        # Inject endpoint ID for contextual use
-        arguments["endpoint_id"] = self.endpoint_id
-
-        # Look up and execute the corresponding local function
-        assistant_function = self.get_function(function_call_data["name"])
-        function_output = None
-        if assistant_function is not None:
-            function_output = assistant_function(**arguments)
-        else:
-            self.logger.error(
-                "Unsupported function requested: %s", function_call_data["name"]
-            )
-
-        # Append the function call + output to conversation history
-        input_messages.append(function_call_data)
-        input_messages.append(
-            {
-                "type": "function_call_output",
-                "call_id": function_call_data["call_id"],
-                "output": str(function_output),
+            function_call_data = {
+                "id": tool_call.id,
+                "arguments": tool_call.arguments,
+                "call_id": tool_call.call_id,
+                "name": tool_call.name,
+                "type": tool_call.type,
+                "status": tool_call.status,
             }
-        )
 
-        # Optionally continue the conversation with updated inputs (streaming or not)
-        should_stream = True if queue else False
-        response = self.invoke_model(
-            **{
-                "input": input_messages,
-                "stream": should_stream,
-            }
-        )
+            # Parse arguments (typically JSON)
+            try:
+                arguments = json.loads(function_call_data.get("arguments", "{}"))
+            except Exception as e:
+                self.logger.error("Error parsing function arguments: %s", e)
+                raise ValueError(f"Failed to parse function arguments: {e}")
 
-        if should_stream:
-            self.handle_stream(
-                response,
-                input_messages,
-                queue=queue,
-                stream_event=stream_event,
-            )
-        else:
-            for output in response.output:
-                self.handle_output(
-                    output,
-                    input_messages,
+            # Inject endpoint ID for contextual use
+            arguments["endpoint_id"] = self.endpoint_id
+
+            # Look up and execute the corresponding local function
+            agent_function = self.get_function(function_call_data["name"])
+            function_output = None
+            if agent_function is not None:
+                try:
+                    function_output = agent_function(**arguments)
+                except Exception as e:
+                    raise RuntimeError(f"Function execution failed: {e}")
+            else:
+                raise ValueError(
+                    f"Unsupported function requested: {function_call_data['name']}"
                 )
+
+            # Append the function call + output to conversation history
+            input_messages.append(function_call_data)
+            input_messages.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": function_call_data["call_id"],
+                    "output": str(function_output),
+                }
+            )
+
+            self.invoke_async_funct(
+                "async_insert_update_tool_call",
+                **{
+                    "thread_uuid": self.run["thread"]["thread_uuid"],
+                    "run_uuid": self.run["run_uuid"],
+                    "tool_call_id": function_call_data["id"],
+                    "tool_type": function_call_data["type"],
+                    "name": function_call_data["name"],
+                    "arguments": arguments,
+                    "content": str(function_output),
+                    "updated_by": self.run["updated_by"],
+                },
+            )
+
+            # Optionally continue the conversation with updated inputs (streaming or not)
+            should_stream = True if queue else False
+            response = self.invoke_model(
+                **{
+                    "input": input_messages,
+                    "stream": should_stream,
+                }
+            )
+
+            if should_stream:
+                self.handle_stream(
+                    response,
+                    input_messages,
+                    queue=queue,
+                    stream_event=stream_event,
+                )
+            else:
+                for output in response.output:
+                    self.handle_output(
+                        output,
+                        input_messages,
+                    )
+
+        except Exception as e:
+            self.logger.error(f"Error in handle_function_call: {e}")
+            raise
 
     def handle_output(
         self,
