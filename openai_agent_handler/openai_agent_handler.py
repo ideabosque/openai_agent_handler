@@ -4,9 +4,9 @@ from __future__ import annotations
 
 __author__ = "bibow"
 
-import json
 import logging
 import threading
+import traceback
 from queue import Queue
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +42,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param model: Default model name to use for requests (defaults to "gpt-4o").
         :param tools: Optional list of tool definitions the model may call.
         """
+        AIAgentEventHandler.__init__(self, logger, agent, run, **setting)
+
         self.logger = logger
         self.client = openai.OpenAI(
             api_key=agent["llm_configuration"].get("openai_api_key")
@@ -58,8 +60,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         self.accumulated_text: str = ""
         # Will hold the final output message data, if any
         self.final_output: Dict[str, Any] = {}
-
-        AIAgentEventHandler.__init__(self, logger, agent, run, **setting)
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
         """
@@ -163,15 +163,40 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "status": tool_call.status,
             }
 
+            self.invoke_async_funct(
+                "async_insert_update_tool_call",
+                **{
+                    "thread_uuid": self.run["thread"]["thread_uuid"],
+                    "run_uuid": self.run["run_uuid"],
+                    "tool_call_id": function_call_data["id"],
+                    "tool_type": function_call_data["type"],
+                    "name": function_call_data["name"],
+                    "updated_by": self.run["updated_by"],
+                },
+            )
+
             # Parse arguments (typically JSON)
             try:
-                arguments = json.loads(function_call_data.get("arguments", "{}"))
+                arguments = Utility.json_loads(
+                    function_call_data.get("arguments", "{}")
+                )
             except Exception as e:
                 self.logger.error("Error parsing function arguments: %s", e)
                 raise ValueError(f"Failed to parse function arguments: {e}")
 
             # Inject endpoint ID for contextual use
             arguments["endpoint_id"] = self.endpoint_id
+
+            self.invoke_async_funct(
+                "async_insert_update_tool_call",
+                **{
+                    "thread_uuid": self.run["thread"]["thread_uuid"],
+                    "tool_call_id": function_call_data["id"],
+                    "arguments": arguments,
+                    "status": "in_progress",
+                    "updated_by": self.run["updated_by"],
+                },
+            )
 
             # Look up and execute the corresponding local function
             agent_function = self.get_function(function_call_data["name"])
@@ -200,12 +225,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "async_insert_update_tool_call",
                 **{
                     "thread_uuid": self.run["thread"]["thread_uuid"],
-                    "run_uuid": self.run["run_uuid"],
                     "tool_call_id": function_call_data["id"],
-                    "tool_type": function_call_data["type"],
-                    "name": function_call_data["name"],
-                    "arguments": arguments,
                     "content": str(function_output),
+                    "status": "completed",
                     "updated_by": self.run["updated_by"],
                 },
             )
@@ -234,6 +256,17 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     )
 
         except Exception as e:
+            log = traceback.format_exc()
+            self.invoke_async_funct(
+                "async_insert_update_tool_call",
+                **{
+                    "thread_uuid": self.run["thread"]["thread_uuid"],
+                    "tool_call_id": function_call_data["id"],
+                    "status": "failed",
+                    "notes": log,
+                    "updated_by": self.run["updated_by"],
+                },
+            )
             self.logger.error(f"Error in handle_function_call: {e}")
             raise
 
