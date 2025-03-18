@@ -316,6 +316,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param stream_event: Optional event to signal streaming completion.
         """
         self.accumulated_text = ""
+        accumulated_partial_json = ""
+        output_format = (
+            self.model_setting.get("text", {"format": {"type": "text"}})
+            .get("format", {"type": "text"})
+            .get("type", "text")
+        )
 
         for chunk in response_stream:
             if chunk.type != "response.output_text.delta":
@@ -332,17 +338,37 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 pass
             elif chunk.type == "response.content_part.added":
                 # TODO: Send the start signal to WSS.
-                pass
+                self.send_data_to_websocket(
+                    data_format=output_format,
+                )
             # If we received partial text data
             elif chunk.type == "response.output_text.delta":
-                self.accumulated_text += chunk.delta
                 print(chunk.delta, end="", flush=True)
-                # TODO: Send the output_text.delta to WSS.
+
+                if output_format in ["json_object", "json_schema"]:
+                    accumulated_partial_json += chunk.delta
+                    self.accumulated_text, accumulated_partial_json = (
+                        self.process_and_send_json(
+                            self.accumulated_text,
+                            accumulated_partial_json,
+                            output_format,
+                        )
+                    )
+                else:
+                    self.accumulated_text += chunk.delta
+                    # TODO: Send the chunk.delta to WSS.
+                    self.send_data_to_websocket(
+                        data_format=output_format,
+                        chunk_delta=chunk.delta,
+                    )
             elif chunk.type == "response.output_text.done":
                 pass
             elif chunk.type == "response.content_part.done":
                 # TODO: Send the complete signal to WSS.
-                pass
+                self.send_data_to_websocket(
+                    data_format=output_format,
+                    is_message_end=True,
+                )
             elif chunk.type == "response.output_item.done":
                 pass
             # If streaming is completed
