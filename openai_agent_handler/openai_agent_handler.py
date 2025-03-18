@@ -33,7 +33,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         self,
         logger: logging.Logger,
         agent: Dict[str, Any],
-        run: Dict[str, Any],
         **setting: Dict[str, Any],
     ) -> None:
         """
@@ -42,7 +41,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param model: Default model name to use for requests (defaults to "gpt-4o").
         :param tools: Optional list of tool definitions the model may call.
         """
-        AIAgentEventHandler.__init__(self, logger, agent, run, **setting)
+        AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
         self.logger = logger
         self.client = openai.OpenAI(
@@ -166,12 +165,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
                 **{
-                    "thread_uuid": self.run["thread"]["thread_uuid"],
-                    "run_uuid": self.run["run_uuid"],
                     "tool_call_id": function_call_data["id"],
                     "tool_type": function_call_data["type"],
                     "name": function_call_data["name"],
-                    "updated_by": self.run["updated_by"],
                 },
             )
 
@@ -190,11 +186,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
                 **{
-                    "thread_uuid": self.run["thread"]["thread_uuid"],
                     "tool_call_id": function_call_data["id"],
                     "arguments": arguments,
                     "status": "in_progress",
-                    "updated_by": self.run["updated_by"],
                 },
             )
 
@@ -224,11 +218,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
                 **{
-                    "thread_uuid": self.run["thread"]["thread_uuid"],
                     "tool_call_id": function_call_data["id"],
                     "content": str(function_output),
                     "status": "completed",
-                    "updated_by": self.run["updated_by"],
                 },
             )
 
@@ -260,11 +252,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
                 **{
-                    "thread_uuid": self.run["thread"]["thread_uuid"],
                     "tool_call_id": function_call_data["id"],
                     "status": "failed",
                     "notes": log,
-                    "updated_by": self.run["updated_by"],
                 },
             )
             self.logger.error(f"Error in handle_function_call: {e}")
