@@ -45,7 +45,17 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         self.logger = logger
         self.client = openai.OpenAI(
-            api_key=agent["llm_configuration"].get("openai_api_key")
+            api_key=agent["configuration"].get("openai_api_key")
+        )
+        self.model_setting = dict(
+            {
+                k: v
+                for k, v in agent["configuration"].items()
+                if k not in ["openai_api_key"]
+            },
+            **{
+                "instructions": agent["instructions"],
+            },
         )
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
