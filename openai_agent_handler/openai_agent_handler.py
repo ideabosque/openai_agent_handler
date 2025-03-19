@@ -181,7 +181,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 raise ValueError(f"Failed to parse function arguments: {e}")
 
             # Inject endpoint ID for contextual use
-            arguments["endpoint_id"] = self.endpoint_id
+            arguments["endpoint_id"] = self._endpoint_id
 
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
