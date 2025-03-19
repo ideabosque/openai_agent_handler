@@ -5,11 +5,11 @@ __author__ = "bibow"
 from setuptools import find_packages, setup
 
 setup(
-    name="ai-Agent-Handler",
+    name="OpenAI-Agent-Handler",
     version="0.0.1",
     author="Idea Bosque",
     author_email="ideabosque@gmail.com",
-    description="AI Agent Handler",
+    description="OpenAI Agent Handler",
     long_description=__doc__,
     packages=find_packages(),
     include_package_data=True,
