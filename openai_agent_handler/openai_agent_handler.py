@@ -47,18 +47,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         self.client = openai.OpenAI(
             api_key=agent["llm_configuration"].get("openai_api_key")
         )
-        self.model_setting = dict(
-            agent["configuration"],
-            **{
-                "model": agent["llm_configuration"].get("model", "gpt-4o"),
-                "instructions": agent["instructions"],
-            },
-        )
-
-        # Will hold partial text from streaming
-        self.accumulated_text: str = ""
-        # Will hold the final output message data, if any
-        self.final_output: Dict[str, Any] = {}
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
         """
