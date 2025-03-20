@@ -185,7 +185,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
-                    "arguments": arguments,
+                    "arguments": {
+                        k: v.isoformat() if hasattr(v, "isoformat") else v
+                        for k, v in arguments.items()
+                    },
                     "status": "in_progress",
                 },
             )
