@@ -137,20 +137,29 @@ class OpenAIEventHandler(AIAgentEventHandler):
         stream_event: threading.Event = None,
     ) -> None:
         """
-        Extracts function-call details from the model output, invokes the corresponding local
-        Python function, and updates the conversation history with the call + its output.
+        Handles function calls from the model by:
+        1. Validating and extracting function call details
+        2. Executing the requested function with provided arguments
+        3. Recording function execution status and results
+        4. Updating conversation history
+        5. Continuing the conversation with function results
 
-        :param tool_call: The function call data from a streaming or non-streaming response.
-        :param input_messages: The conversation history to be appended with function call info.
-        :param queue: Queue instance if streaming is in progress (optional).
-        :param stream_event: Event instance to signal completion (optional).
-        :raises ValueError: If tool_call is invalid or missing required attributes
-        :raises RuntimeError: If function execution fails
+        Args:
+            tool_call: Function call data from model response
+            input_messages: Conversation history to update
+            queue: Optional queue for streaming responses
+            stream_event: Optional event to signal streaming completion
+
+        Raises:
+            ValueError: If tool_call is invalid or function not supported
+            Exception: If function execution fails
         """
+        # Validate tool call
         if not tool_call or not hasattr(tool_call, "id"):
             raise ValueError("Invalid tool_call object")
 
         try:
+            # Extract function call metadata
             function_call_data = {
                 "id": tool_call.id,
                 "arguments": tool_call.arguments,
@@ -160,25 +169,45 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "status": tool_call.status,
             }
 
-            self.invoke_async_funct(
-                "async_insert_update_tool_call",
-                **{
-                    "tool_call_id": function_call_data["id"],
-                    "tool_type": function_call_data["type"],
-                    "name": function_call_data["name"],
-                },
+            # Record initial function call
+            self._record_function_call_start(function_call_data)
+
+            # Parse and process arguments
+            arguments = self._process_function_arguments(function_call_data)
+
+            # Execute function and handle result
+            function_output = self._execute_function(function_call_data, arguments)
+
+            # Update conversation history
+            self._update_conversation_history(
+                function_call_data, function_output, input_messages
             )
 
-            # Parse arguments (typically JSON)
-            try:
-                arguments = Utility.json_loads(
-                    function_call_data.get("arguments", "{}")
-                )
-            except Exception as e:
-                self.logger.error("Error parsing function arguments: %s", e)
-                raise ValueError(f"Failed to parse function arguments: {e}")
+            # Continue conversation
+            self._continue_conversation(input_messages, queue, stream_event)
 
-            # Inject endpoint ID for contextual use
+        except Exception as e:
+            log = traceback.format_exc()
+            self.logger.error(f"Error in handle_function_call: {e}")
+            raise
+
+    def _record_function_call_start(self, function_call_data: Dict[str, Any]) -> None:
+        """Records the initial function call details"""
+        self.invoke_async_funct(
+            "async_insert_update_tool_call",
+            **{
+                "tool_call_id": function_call_data["id"],
+                "tool_type": function_call_data["type"],
+                "name": function_call_data["name"],
+            },
+        )
+
+    def _process_function_arguments(
+        self, function_call_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Parses and processes function arguments"""
+        try:
+            arguments = Utility.json_loads(function_call_data.get("arguments", "{}"))
             arguments["endpoint_id"] = self._endpoint_id
 
             self.invoke_async_funct(
@@ -192,61 +221,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "status": "in_progress",
                 },
             )
-
-            # Look up and execute the corresponding local function
-            agent_function = self.get_function(function_call_data["name"])
-            function_output = None
-            if agent_function is not None:
-                try:
-                    function_output = agent_function(**arguments)
-                except Exception as e:
-                    raise RuntimeError(f"Function execution failed: {e}")
-            else:
-                raise ValueError(
-                    f"Unsupported function requested: {function_call_data['name']}"
-                )
-
-            # Append the function call + output to conversation history
-            input_messages.append(function_call_data)
-            input_messages.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": function_call_data["call_id"],
-                    "output": str(function_output),
-                }
-            )
-
-            self.invoke_async_funct(
-                "async_insert_update_tool_call",
-                **{
-                    "tool_call_id": function_call_data["id"],
-                    "content": str(function_output),
-                    "status": "completed",
-                },
-            )
-
-            # Optionally continue the conversation with updated inputs (streaming or not)
-            should_stream = True if queue else False
-            response = self.invoke_model(
-                **{
-                    "input": input_messages,
-                    "stream": should_stream,
-                }
-            )
-
-            if should_stream:
-                self.handle_stream(
-                    response,
-                    input_messages,
-                    queue=queue,
-                    stream_event=stream_event,
-                )
-            else:
-                for output in response.output:
-                    self.handle_output(
-                        output,
-                        input_messages,
-                    )
+            return arguments
 
         except Exception as e:
             log = traceback.format_exc()
@@ -258,8 +233,79 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "notes": log,
                 },
             )
-            self.logger.error(f"Error in handle_function_call: {e}")
-            raise
+            self.logger.error("Error parsing function arguments: %s", e)
+            raise ValueError(f"Failed to parse function arguments: {e}")
+
+    def _execute_function(
+        self, function_call_data: Dict[str, Any], arguments: Dict[str, Any]
+    ) -> Any:
+        """Executes the requested function and handles the result"""
+        agent_function = self.get_function(function_call_data["name"])
+        if not agent_function:
+            raise ValueError(
+                f"Unsupported function requested: {function_call_data['name']}"
+            )
+
+        try:
+            function_output = agent_function(**arguments)
+            self.invoke_async_funct(
+                "async_insert_update_tool_call",
+                **{
+                    "tool_call_id": function_call_data["id"],
+                    "content": str(function_output),
+                    "status": "completed",
+                },
+            )
+            return function_output
+
+        except Exception as e:
+            log = traceback.format_exc()
+            self.invoke_async_funct(
+                "async_insert_update_tool_call",
+                **{
+                    "tool_call_id": function_call_data["id"],
+                    "status": "failed",
+                    "notes": log,
+                },
+            )
+            return f"Function execution failed: {e}"
+
+    def _update_conversation_history(
+        self,
+        function_call_data: Dict[str, Any],
+        function_output: Any,
+        input_messages: List[Dict[str, Any]],
+    ) -> None:
+        """Updates conversation history with function call and output"""
+        input_messages.append(function_call_data)
+        input_messages.append(
+            {
+                "type": "function_call_output",
+                "call_id": function_call_data["call_id"],
+                "output": str(function_output),
+            }
+        )
+
+    def _continue_conversation(
+        self,
+        input_messages: List[Dict[str, Any]],
+        queue: Queue = None,
+        stream_event: threading.Event = None,
+    ) -> None:
+        """Continues conversation with updated inputs"""
+        should_stream = bool(queue)
+        response = self.invoke_model(
+            **{
+                "input": input_messages,
+                "stream": should_stream,
+            }
+        )
+
+        if should_stream:
+            self.handle_stream(response, input_messages, queue, stream_event)
+        else:
+            for output in response.output:
+                self.handle_output(output, input_messages)
 
     def handle_output(
         self,
@@ -338,7 +384,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.output_item.added":
                 pass
             elif chunk.type == "response.content_part.added":
-                # TODO: Send the start signal to WSS.
+                # Send initial message start signal to WebSocket server
                 self.send_data_to_websocket(
                     data_format=output_format,
                 )
@@ -346,6 +392,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.output_text.delta":
                 print(chunk.delta, end="", flush=True)
 
+                # For JSON formats, accumulate partial JSON text and process it
+                # when complete JSON objects are detected. This ensures valid JSON
+                # is sent to the WebSocket server.
                 if output_format in ["json_object", "json_schema"]:
                     accumulated_partial_json += chunk.delta
                     self.accumulated_text, accumulated_partial_json = (
@@ -357,7 +406,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     )
                 else:
                     self.accumulated_text += chunk.delta
-                    # TODO: Send the chunk.delta to WSS.
+                    # Send incremental text chunk to WebSocket server
                     self.send_data_to_websocket(
                         data_format=output_format,
                         chunk_delta=chunk.delta,
@@ -365,7 +414,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.output_text.done":
                 pass
             elif chunk.type == "response.content_part.done":
-                # TODO: Send the complete signal to WSS.
+                # Send message completion signal to WebSocket server
                 self.send_data_to_websocket(
                     data_format=output_format,
                     is_message_end=True,
