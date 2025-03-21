@@ -302,7 +302,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             {
                 "type": "function_call_output",
                 "call_id": function_call_data["call_id"],
-                "output": str(function_output),
+                "output": Utility.json_dumps(function_output),
             }
         )
 
@@ -392,8 +392,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         for chunk in response_stream:
             if chunk.type != "response.output_text.delta":
-                self.logger.info(f"Chunk type: {getattr(chunk, 'type', 'N/A')}")
-                self.logger.info(f"Chunk attributes: {vars(chunk)}")
+                self.logger.debug(f"Chunk type: {getattr(chunk, 'type', 'N/A')}")
+                self.logger.debug(f"Chunk attributes: {vars(chunk)}")
 
             # If the model run has just started
             if chunk.type == "response.created":
