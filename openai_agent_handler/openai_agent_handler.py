@@ -11,6 +11,7 @@ from queue import Queue
 from typing import Any, Dict, List, Optional
 
 import openai
+import pendulum
 
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Utility
@@ -186,8 +187,27 @@ class OpenAIEventHandler(AIAgentEventHandler):
             # Continue conversation
             self._continue_conversation(input_messages, queue, stream_event)
 
+            if self._run is None:
+                self._short_term_memory.append(
+                    {
+                        "message": {
+                            "role": self.agent["tool_call_role"],
+                            "content": Utility.json_dumps(
+                                {
+                                    "tool": {
+                                        "tool_type": tool_call.type,
+                                        "name": tool_call.name,
+                                        "arguments": arguments,
+                                    },
+                                    "output": function_output,
+                                }
+                            ),
+                        },
+                        "created_at": pendulum.now("UTC"),
+                    }
+                )
+
         except Exception as e:
-            log = traceback.format_exc()
             self.logger.error(f"Error in handle_function_call: {e}")
             raise
 
