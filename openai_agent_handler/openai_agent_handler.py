@@ -272,7 +272,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
-                    "content": str(function_output),
+                    "content": Utility.json_dumps(function_output),
                     "status": "completed",
                 },
             )
