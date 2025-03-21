@@ -230,17 +230,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             arguments = Utility.json_loads(function_call_data.get("arguments", "{}"))
             arguments["endpoint_id"] = self._endpoint_id
 
-            self.invoke_async_funct(
-                "async_insert_update_tool_call",
-                **{
-                    "tool_call_id": function_call_data["id"],
-                    "arguments": {
-                        k: v.isoformat() if hasattr(v, "isoformat") else v
-                        for k, v in arguments.items()
-                    },
-                    "status": "in_progress",
-                },
-            )
             return arguments
 
         except Exception as e:
@@ -249,6 +238,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
+                    "arguments": function_call_data.get("arguments", "{}"),
                     "status": "failed",
                     "notes": log,
                 },
@@ -267,7 +257,17 @@ class OpenAIEventHandler(AIAgentEventHandler):
             )
 
         try:
+            self.invoke_async_funct(
+                "async_insert_update_tool_call",
+                **{
+                    "tool_call_id": function_call_data["id"],
+                    "arguments": Utility.json_dumps(arguments),
+                    "status": "in_progress",
+                },
+            )
+
             function_output = agent_function(**arguments)
+
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
                 **{
