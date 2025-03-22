@@ -219,7 +219,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "tool_call_id": function_call_data["id"],
                 "tool_type": function_call_data["type"],
                 "name": function_call_data["name"],
-                "status": "in_progress",
             },
         )
 
@@ -258,6 +257,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
             )
 
         try:
+            self.invoke_async_funct(
+                "async_insert_update_tool_call",
+                **{
+                    "tool_call_id": function_call_data["id"],
+                    "arguments": Utility.json_dumps(arguments),
+                    "status": "in_progress",
+                },
+            )
+
             function_output = agent_function(**arguments)
 
             self.invoke_async_funct(
