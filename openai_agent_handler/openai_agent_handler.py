@@ -171,20 +171,35 @@ class OpenAIEventHandler(AIAgentEventHandler):
             }
 
             # Record initial function call
+            self.logger.info(
+                f"[handle_function_call] Starting function call recording for {function_call_data['name']}"
+            )
             self._record_function_call_start(function_call_data)
 
             # Parse and process arguments
+            self.logger.info(
+                f"[handle_function_call] Processing arguments for function {function_call_data['name']}"
+            )
             arguments = self._process_function_arguments(function_call_data)
 
             # Execute function and handle result
+            self.logger.info(
+                f"[handle_function_call] Executing function {function_call_data['name']} with arguments {arguments}"
+            )
             function_output = self._execute_function(function_call_data, arguments)
 
             # Update conversation history
+            self.logger.info(
+                f"[handle_function_call][{function_call_data['name']}] Updating conversation history"
+            )
             self._update_conversation_history(
                 function_call_data, function_output, input_messages
             )
 
             # Continue conversation
+            self.logger.info(
+                f"[handle_function_call][{function_call_data['name']}] Continuing conversation"
+            )
             self._continue_conversation(input_messages, queue, stream_event)
 
             if self._run is None:
