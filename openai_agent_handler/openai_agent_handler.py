@@ -287,7 +287,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
-                    "arguments": Utility.json_dumps(arguments),
                     "content": Utility.json_dumps(function_output),
                     "status": "completed",
                 },
