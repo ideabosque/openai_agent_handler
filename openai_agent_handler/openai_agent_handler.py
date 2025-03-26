@@ -405,6 +405,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             .get("format", {"type": "text"})
             .get("type", "text")
         )
+        index = 0
 
         for chunk in response_stream:
             if chunk.type != "response.output_text.delta":
@@ -433,8 +434,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 # is sent to the WebSocket server.
                 if output_format in ["json_object", "json_schema"]:
                     accumulated_partial_json += chunk.delta
-                    self.accumulated_text, accumulated_partial_json = (
+                    index, self.accumulated_text, accumulated_partial_json = (
                         self.process_and_send_json(
+                            index,
                             self.accumulated_text,
                             accumulated_partial_json,
                             output_format,
@@ -444,9 +446,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     self.accumulated_text += chunk.delta
                     # Send incremental text chunk to WebSocket server
                     self.send_data_to_websocket(
+                        index=index,
                         data_format=output_format,
                         chunk_delta=chunk.delta,
                     )
+                    index += 1
             elif chunk.type == "response.output_text.done":
                 pass
             elif chunk.type == "response.content_part.done":
