@@ -423,8 +423,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.content_part.added":
                 # Send initial message start signal to WebSocket server
                 self.send_data_to_websocket(
+                    index=index,
                     data_format=output_format,
                 )
+                index += 1
             # If we received partial text data
             elif chunk.type == "response.output_text.delta":
                 print(chunk.delta, end="", flush=True)
@@ -456,6 +458,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.content_part.done":
                 # Send message completion signal to WebSocket server
                 self.send_data_to_websocket(
+                    index=index,
                     data_format=output_format,
                     is_message_end=True,
                 )
