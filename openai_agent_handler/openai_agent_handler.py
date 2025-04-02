@@ -7,6 +7,7 @@ __author__ = "bibow"
 import logging
 import threading
 import traceback
+from decimal import Decimal
 from queue import Queue
 from typing import Any, Dict, List, Optional
 
@@ -50,7 +51,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         )
         self.model_setting = dict(
             {
-                k: v
+                k: float(v) if isinstance(v, Decimal) else v
                 for k, v in agent["configuration"].items()
                 if k not in ["openai_api_key"]
             },
