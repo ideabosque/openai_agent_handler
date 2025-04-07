@@ -450,7 +450,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     self.accumulated_text += chunk.delta
                     accumulated_partial_text += chunk.delta
                     # Send incremental text chunk to WebSocket server
-                    if len(accumulated_partial_text) >= self.setting.get("buffer", 10):
+                    if len(accumulated_partial_text) >= int(
+                        self.setting.get("accumulated_partial_text_buffer", "10")
+                    ):
                         self.send_data_to_websocket(
                             index=index,
                             data_format=output_format,
