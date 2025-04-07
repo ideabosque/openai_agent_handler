@@ -461,21 +461,23 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         accumulated_partial_text = ""
                         index += 1
             elif chunk.type == "response.output_text.done":
+                # Send message completion signal to WebSocket server
                 if len(accumulated_partial_text) > 0:
                     self.send_data_to_websocket(
                         index=index,
                         data_format=output_format,
                         chunk_delta=accumulated_partial_text,
+                        is_message_end=True,
                     )
                     accumulated_partial_text = ""
-                    index += 1
+                else:
+                    self.send_data_to_websocket(
+                        index=index,
+                        data_format=output_format,
+                        is_message_end=True,
+                    )
             elif chunk.type == "response.content_part.done":
-                # Send message completion signal to WebSocket server
-                self.send_data_to_websocket(
-                    index=index,
-                    data_format=output_format,
-                    is_message_end=True,
-                )
+                pass
             elif chunk.type == "response.output_item.done":
                 pass
             # If streaming is completed
