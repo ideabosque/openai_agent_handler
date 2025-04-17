@@ -96,7 +96,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error("No OpenAI client provided.")
                 return None
 
-            should_stream = True if queue is not None else False
+            stream = True if queue is not None else False
 
             # Add model-specific settings if provided
             if model_setting:
@@ -105,12 +105,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
             response = self.invoke_model(
                 **{
                     "input": input_messages,
-                    "stream": should_stream,
+                    "stream": stream,
                 }
             )
 
             # If streaming is enabled, process chunks
-            if should_stream:
+            if stream:
                 self.handle_stream(
                     response,
                     input_messages,
