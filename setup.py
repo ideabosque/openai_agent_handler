@@ -19,7 +19,6 @@ setup(
         "SilvaEngine-Utility",
         "SilvaEngine-DynamoDB-Base",
         "AI-Agent-Handler",
-        "graphene",
         "openai",
     ],
     classifiers=[
