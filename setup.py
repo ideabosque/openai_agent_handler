@@ -15,11 +15,7 @@ setup(
     include_package_data=True,
     zip_safe=False,
     platforms="Linux",
-    install_requires=[
-        "SilvaEngine-Utility",
-        "AI-Agent-Handler",
-        "openai",
-    ],
+    install_requires=["SilvaEngine-Utility", "AI-Agent-Handler", "openai", "tiktoken"],
     classifiers=[
         "Programming Language :: Python",
         "Environment :: Web Environment",
