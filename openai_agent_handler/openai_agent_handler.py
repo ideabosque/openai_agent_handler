@@ -29,6 +29,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
       - Executes local functions as needed.
       - Maintains the conversation history (input_messages).
       - Stores the final generated message or function call outputs.
+      - Handles both streaming and non-streaming responses.
+      - Supports function calling with argument validation.
+      - Provides detailed logging and error handling.
     """
 
     def __init__(
@@ -38,10 +41,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
         **setting: Dict[str, Any],
     ) -> None:
         """
+        Initializes the OpenAI event handler with required configuration.
+
         :param logger: A logging instance for debug/info messages.
-        :param client: An OpenAI client instance or a compatible object.
-        :param model: Default model name to use for requests (defaults to "gpt-4o").
-        :param tools: Optional list of tool definitions the model may call.
+        :param agent: Dictionary containing agent configuration including OpenAI API key and model settings.
+        :param setting: Additional settings passed as keyword arguments.
         """
         AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
@@ -62,11 +66,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
         """
-        Invokes the model with the provided arguments and returns the response.
+        Makes an API call to OpenAI with provided arguments.
 
-        :param kwargs: Keyword arguments for the model invocation.
-        :return: The response from the model.
-        :raises: Exception if model invocation fails
+        :param kwargs: Dictionary of arguments to pass to the OpenAI API.
+        :return: Response from OpenAI API.
+        :raises: Exception if API call fails or returns error.
         """
         try:
             variables = dict(self.model_setting, **kwargs)
@@ -83,13 +87,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
         model_setting: Dict[str, Any] = None,
     ) -> Optional[str]:
         """
-        Sends a request to the OpenAI API. If a queue is provided, we switch to streaming mode,
-        otherwise, a simple (non-streaming) request is made.
+        Sends a request to OpenAI API with support for both streaming and non-streaming responses.
 
-        :param input_messages: Conversation history, including the latest user question.
-        :param queue: An optional queue to receive streaming events. If provided, streaming is used.
-        :param stream_event: An optional threading.Event to signal streaming completion.
-        :return: The response ID if non-streaming, otherwise None.
+        :param input_messages: List of message dictionaries representing conversation history.
+        :param queue: Queue object for receiving streaming events.
+        :param stream_event: Event object to signal when streaming is complete.
+        :param model_setting: Optional model-specific settings to override defaults.
+        :return: Response ID for non-streaming requests, None for streaming.
+        :raises: Exception if request fails or client is not configured.
         """
         try:
             if not self.client:
@@ -120,11 +125,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 return None
 
             # Otherwise, handle a normal (non-stream) response
-            for output in response.output:
-                self.handle_output(
-                    output,
-                    input_messages,
-                )
+            self.handle_response(
+                response,
+                input_messages,
+            )
             return response.id
 
         except Exception as e:
@@ -135,26 +139,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
         self,
         tool_call: Any,
         input_messages: List[Dict[str, Any]],
-        queue: Queue = None,
-        stream_event: threading.Event = None,
     ) -> None:
         """
-        Handles function calls from the model by:
-        1. Validating and extracting function call details
-        2. Executing the requested function with provided arguments
-        3. Recording function execution status and results
-        4. Updating conversation history
-        5. Continuing the conversation with function results
+        Processes function calls from the model including validation, execution and history updates.
 
-        Args:
-            tool_call: Function call data from model response
-            input_messages: Conversation history to update
-            queue: Optional queue for streaming responses
-            stream_event: Optional event to signal streaming completion
-
-        Raises:
-            ValueError: If tool_call is invalid or function not supported
-            Exception: If function execution fails
+        :param tool_call: Object containing function call details from model.
+        :param input_messages: Conversation history to update with function results.
+        :return: Updated input messages list.
+        :raises: ValueError if tool_call is invalid.
+                Exception if function execution fails.
         """
         # Validate tool call
         if not tool_call or not hasattr(tool_call, "id"):
@@ -201,7 +194,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self.logger.info(
                 f"[handle_function_call][{function_call_data['name']}] Continuing conversation"
             )
-            self._continue_conversation(input_messages, queue, stream_event)
 
             if self._run is None:
                 self._short_term_memory.append(
@@ -222,13 +214,18 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         "created_at": pendulum.now("UTC"),
                     }
                 )
+            return input_messages
 
         except Exception as e:
             self.logger.error(f"Error in handle_function_call: {e}")
             raise
 
     def _record_function_call_start(self, function_call_data: Dict[str, Any]) -> None:
-        """Records the initial function call details"""
+        """
+        Records the start of a function call execution in the system.
+
+        :param function_call_data: Dictionary containing function call metadata.
+        """
         self.invoke_async_funct(
             "async_insert_update_tool_call",
             **{
@@ -241,7 +238,13 @@ class OpenAIEventHandler(AIAgentEventHandler):
     def _process_function_arguments(
         self, function_call_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Parses and processes function arguments"""
+        """
+        Parses and validates function arguments from the model response.
+
+        :param function_call_data: Dictionary containing function call details including arguments.
+        :return: Processed and validated arguments dictionary.
+        :raises: ValueError if argument parsing fails.
+        """
         try:
             arguments = Utility.json_loads(function_call_data.get("arguments", "{}"))
             arguments["endpoint_id"] = self._endpoint_id
@@ -265,7 +268,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
     def _execute_function(
         self, function_call_data: Dict[str, Any], arguments: Dict[str, Any]
     ) -> Any:
-        """Executes the requested function and handles the result"""
+        """
+        Executes the requested function with provided arguments and handles results.
+
+        :param function_call_data: Dictionary containing function metadata.
+        :param arguments: Processed arguments to pass to the function.
+        :return: Function execution result or error message.
+        :raises: ValueError if function is not supported.
+        """
         agent_function = self.get_function(function_call_data["name"])
         if not agent_function:
             raise ValueError(
@@ -313,7 +323,13 @@ class OpenAIEventHandler(AIAgentEventHandler):
         function_output: Any,
         input_messages: List[Dict[str, Any]],
     ) -> None:
-        """Updates conversation history with function call and output"""
+        """
+        Updates the conversation history with function call details and output.
+
+        :param function_call_data: Dictionary containing function call metadata.
+        :param function_output: Result returned from function execution.
+        :param input_messages: List of messages to update with function details.
+        """
         input_messages.append(function_call_data)
         input_messages.append(
             {
@@ -323,61 +339,40 @@ class OpenAIEventHandler(AIAgentEventHandler):
             }
         )
 
-    def _continue_conversation(
+    def handle_response(
         self,
-        input_messages: List[Dict[str, Any]],
-        queue: Queue = None,
-        stream_event: threading.Event = None,
-    ) -> None:
-        """Continues conversation with updated inputs"""
-        should_stream = bool(queue)
-        response = self.invoke_model(
-            **{
-                "input": input_messages,
-                "stream": should_stream,
-            }
-        )
-
-        if should_stream:
-            self.handle_stream(response, input_messages, queue, stream_event)
-        else:
-            for output in response.output:
-                self.handle_output(output, input_messages)
-
-    def handle_output(
-        self,
-        output: Any,
+        response: Any,
         input_messages: List[Dict[str, Any]],
         queue: Queue = None,
         stream_event: threading.Event = None,
     ) -> None:
         """
-        Processes a single output object. If it's a message, we store it as final output.
-        If it's a function call, we route to handle_function_call.
+        Processes model responses and routes them to appropriate handlers.
 
-        :param output: The model's output object.
-        :param input_messages: Conversation history for potential updates.
-        :param queue: Optional queue if streaming is in use.
+        :param response: Response object from the model.
+        :param input_messages: Current conversation history.
+        :param queue: Optional queue for streaming responses.
         :param stream_event: Optional event to signal streaming completion.
         """
-        self.logger.info("Processing output: %s", output)
 
-        # If it's a normal message
-        if output.type == "message":
-            self.final_output = {
-                "message_id": output.id,
-                "role": output.role,
-                "content": output.content[0].text,
-            }
+        for output in response.output:
+            # If it's a normal message
+            if output.type == "message":
+                self.final_output = {
+                    "message_id": output.id,
+                    "role": output.role,
+                    "content": output.content[0].text,
+                }
+                return
 
-        # If it's a function call
-        if output.type == "function_call":
-            self.handle_function_call(
-                output,
-                input_messages,
-                queue=queue,
-                stream_event=stream_event,
-            )
+            # If it's a function call
+            if output.type == "function_call":
+                input_messages = self.handle_function_call(
+                    output,
+                    input_messages,
+                )
+
+        self.ask_model(input_messages, queue=queue, stream_event=stream_event)
 
     def handle_stream(
         self,
@@ -387,17 +382,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
         stream_event: threading.Event = None,
     ) -> None:
         """
-        Iterates over each chunk in a streaming response:
-          - Logs chunk details for debugging.
-          - Detects 'response.created' to store a run ID in the queue.
-          - Detects 'response.completed' to handle final outputs.
-          - Captures partial text from 'response.output_text.delta'.
-          - Notifies completion via stream_event at the end.
+        Processes streaming responses from the model chunk by chunk.
 
-        :param response_stream: The streaming response object.
-        :param input_messages: Conversation history for updates.
-        :param queue: Optional queue to push events like 'response_id'.
-        :param stream_event: Optional event to signal streaming completion.
+        :param response_stream: Iterator of response chunks from the model.
+        :param input_messages: Current conversation history.
+        :param queue: Queue to receive streaming events.
+        :param stream_event: Event to signal when streaming is complete.
         """
         self.accumulated_text = ""
         accumulated_partial_json = ""
@@ -485,13 +475,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                 # Process any final output objects in chunk.response
                 if hasattr(chunk.response, "output") and chunk.response.output:
-                    for output in chunk.response.output:
-                        self.handle_output(
-                            output,
-                            input_messages,
-                            queue=queue,
-                            stream_event=stream_event,
-                        )
+                    self.handle_response(
+                        chunk.response,
+                        input_messages,
+                        queue=queue,
+                        stream_event=stream_event,
+                    )
 
         # Signal that streaming has finished
         if stream_event:
