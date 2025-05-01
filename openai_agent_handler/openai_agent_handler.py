@@ -125,10 +125,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 return None
 
             # Otherwise, handle a normal (non-stream) response
-            self.handle_response(
-                response,
-                input_messages,
-            )
+            self.handle_response(response, input_messages)
             return response.id
 
         except Exception as e:
@@ -340,11 +337,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         )
 
     def handle_response(
-        self,
-        response: Any,
-        input_messages: List[Dict[str, Any]],
-        queue: Queue = None,
-        stream_event: threading.Event = None,
+        self, response: Any, input_messages: List[Dict[str, Any]]
     ) -> None:
         """
         Processes model responses and routes them to appropriate handlers.
@@ -372,7 +365,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     input_messages,
                 )
 
-        self.ask_model(input_messages, queue=queue, stream_event=stream_event)
+        self.ask_model(input_messages)
 
     def handle_stream(
         self,
@@ -475,13 +468,25 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                 # Process any final output objects in chunk.response
                 if hasattr(chunk.response, "output") and chunk.response.output:
-                    self.handle_response(
-                        chunk.response,
-                        input_messages,
-                        queue=queue,
-                        stream_event=stream_event,
-                    )
+                    for output in chunk.response.output:
+                        if output.type == "message":
+                            self.final_output = {
+                                "message_id": output.id,
+                                "role": output.role,
+                                "content": output.content[0].text,
+                            }
 
-        # Signal that streaming has finished
-        if stream_event:
-            stream_event.set()
+                            # Signal that streaming has finished
+                            if stream_event:
+                                stream_event.set()
+                            return
+
+                        # If it's a function call
+                        if output.type == "function_call":
+                            input_messages = self.handle_function_call(
+                                output, input_messages
+                            )
+
+                    self.ask_model(
+                        input_messages, queue=queue, stream_event=stream_event
+                    )
