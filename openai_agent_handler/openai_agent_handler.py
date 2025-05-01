@@ -382,6 +382,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param queue: Queue to receive streaming events.
         :param stream_event: Event to signal when streaming is complete.
         """
+        message_id = None
         self.accumulated_text = ""
         accumulated_partial_json = ""
         accumulated_partial_text = ""
@@ -486,11 +487,13 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         )
                         return
 
-                    self.final_output = {
-                        "message_id": chunk.response.output[0].id,
-                        "role": chunk.response.output[0].role,
-                        "content": chunk.response.output_text,
-                    }
+                    message_id = chunk.response.output[-1].id
+
+        self.final_output = {
+            "message_id": message_id,
+            "role": "assistant",
+            "content": self.accumulated_text,
+        }
 
         # Signal that streaming has finished
         if stream_event:
