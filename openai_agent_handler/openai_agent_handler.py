@@ -468,25 +468,30 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                 # Process any final output objects in chunk.response
                 if hasattr(chunk.response, "output") and chunk.response.output:
-                    for output in chunk.response.output:
-                        if output.type == "message":
-                            self.final_output = {
-                                "message_id": output.id,
-                                "role": output.role,
-                                "content": output.content[0].text,
-                            }
+                    # Check if output is a function call or message
+                    if any(
+                        output.type == "function_call"
+                        for output in chunk.response.output
+                        if hasattr(output, "type")
+                    ):
+                        for output in chunk.response.output:
+                            # If it's a function call
+                            if output.type == "function_call":
+                                input_messages = self.handle_function_call(
+                                    output, input_messages
+                                )
 
-                            # Signal that streaming has finished
-                            if stream_event:
-                                stream_event.set()
-                            return
+                        self.ask_model(
+                            input_messages, queue=queue, stream_event=stream_event
+                        )
+                        return
 
-                        # If it's a function call
-                        if output.type == "function_call":
-                            input_messages = self.handle_function_call(
-                                output, input_messages
-                            )
+                    self.final_output = {
+                        "message_id": chunk.response.output[0].id,
+                        "role": chunk.response.output[0].role,
+                        "content": chunk.response.output_text,
+                    }
 
-                    self.ask_model(
-                        input_messages, queue=queue, stream_event=stream_event
-                    )
+        # Signal that streaming has finished
+        if stream_event:
+            stream_event.set()
