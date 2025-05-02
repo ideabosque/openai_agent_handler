@@ -200,6 +200,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             "content": Utility.json_dumps(
                                 {
                                     "tool": {
+                                        "tool_call_id": tool_call.id,
                                         "tool_type": tool_call.type,
                                         "name": tool_call.name,
                                         "arguments": arguments,
