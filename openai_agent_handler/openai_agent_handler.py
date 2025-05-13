@@ -49,7 +49,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
-        self.logger = logger
         self.client = openai.OpenAI(
             api_key=agent["configuration"].get("openai_api_key")
         )
