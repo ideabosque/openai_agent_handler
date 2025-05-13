@@ -369,7 +369,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
     def handle_stream(
         self,
-        response_stream,
+        response_stream: Any,
         input_messages: List[Dict[str, Any]],
         queue: Queue = None,
         stream_event: threading.Event = None,
