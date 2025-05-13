@@ -91,10 +91,6 @@ def invoke_model(
     }
   },
   "function_configuration": {
-    "endpoint_id": "openai",
-    "region_name": "${region_name}",
-    "aws_access_key_id": "${aws_access_key_id}",
-    "aws_secret_access_key": "${aws_secret_access_key}",
     "weather_provider": "open-meteo"
   },
   "instructions": """
@@ -141,11 +137,25 @@ Output Format:
 ### 🔁 Non-Streaming Chatbot Script
 
 ```python
-import pendulum
+import pendulum, os
 from openai_agent_handler import OpenAIEventHandler
+from dotenv import load_dotenv
+
+load_dotenv()
+setting = {
+    "region_name": os.getenv("region_name"),
+    "aws_access_key_id": os.getenv("aws_access_key_id"),
+    "aws_secret_access_key": os.getenv("aws_secret_access_key"),
+    "funct_bucket_name": os.getenv("funct_bucket_name"),
+    "funct_zip_path": os.getenv("funct_zip_path"),
+    "funct_extract_path": os.getenv("funct_extract_path"),
+    "connection_id": os.getenv("connection_id"),
+    "endpoint_id": os.getenv("endpoint_id"),
+    "test_mode": os.getenv("test_mode"),
+}
 
 weather_agent = { ... }  # Configuration as defined above
-handler = OpenAIEventHandler(logger=None, agent=None, **weather_agent)
+handler = OpenAIEventHandler(logger=None, agent=weather_agent, **setting)
 handler.short_term_memory = []
 
 def get_input_messages(messages, num_of_messages):
