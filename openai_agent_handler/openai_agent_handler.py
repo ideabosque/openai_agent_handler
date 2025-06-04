@@ -348,24 +348,36 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param stream_event: Optional event to signal streaming completion.
         """
 
-        for output in response.output:
-            # If it's a normal message
-            if output.type == "message":
-                self.final_output = {
-                    "message_id": output.id,
-                    "role": output.role,
-                    "content": output.content[0].text,
-                }
-                return
+        message_id = None
+        role = None
+        content = ""
 
+        for output in response.output:
             # If it's a function call
             if output.type == "function_call":
                 input_messages = self.handle_function_call(
                     output,
                     input_messages,
                 )
+                self.ask_model(input_messages)
+                return
+            # If it's a normal message
+            elif output.type == "message" and output.status == "completed":
+                message_id = output.id if message_id is None else message_id
+                role = output.role if role is None else role
+                content = content + output.content[0].text
+            elif output.type == "web_search_call" and output.status == "completed":
+                continue
+            else:
+                raise Exception(
+                    f"Unknown response type: {output.type} or status: {output.status}"
+                )
 
-        self.ask_model(input_messages)
+        self.final_output = {
+            "message_id": message_id,
+            "role": role,
+            "content": content,
+        }
 
     def handle_stream(
         self,
