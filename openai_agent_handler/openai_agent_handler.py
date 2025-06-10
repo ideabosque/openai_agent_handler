@@ -366,8 +366,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 message_id = output.id if message_id is None else message_id
                 role = output.role if role is None else role
                 content = content + output.content[0].text
-            elif output.type == "web_search_call" and output.status == "completed":
+            elif output.type == ["web_search_call"] and output.status == "completed":
                 continue
+            elif output.type == "mcp_list_tools":
+                continue
+            elif output.type == "mcp_call":
+                continue
+            elif output.type == "mcp_approval_request":
+                raise Exception("MCP Approval Request is not currently supported")
             else:
                 raise Exception(
                     f"Unknown response type: {output.type} or status: {output.status}"
@@ -492,6 +498,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             input_messages, queue=queue, stream_event=stream_event
                         )
                         return
+
+                    if any(
+                        output.type == "mcp_approval_request"
+                        for output in chunk.response.output
+                        if hasattr(output, "type")
+                    ):
+                        raise Exception(
+                            "MCP Approval Request is not currently supported"
+                        )
 
                     message_id = chunk.response.output[-1].id
                     role = chunk.response.output[-1].role
