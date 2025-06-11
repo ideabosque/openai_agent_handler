@@ -366,7 +366,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 message_id = output.id if message_id is None else message_id
                 role = output.role if role is None else role
                 content = content + output.content[0].text
-            elif output.type == ["web_search_call"] and output.status == "completed":
+            elif output.type == "web_search_call" and output.status == "completed":
                 continue
             elif output.type == "mcp_list_tools":
                 continue
