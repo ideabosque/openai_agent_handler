@@ -87,8 +87,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         input_messages: List[Dict[str, Any]],
         queue: Queue = None,
         stream_event: threading.Event = None,
-        model_setting: Dict[str, Any] = None,
         input_files: List[str, Any] = [],
+        model_setting: Dict[str, Any] = None,
     ) -> Optional[str]:
         """
         Sends a request to OpenAI API with support for both streaming and non-streaming responses.
