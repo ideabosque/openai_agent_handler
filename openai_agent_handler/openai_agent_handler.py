@@ -4,15 +4,19 @@ from __future__ import annotations
 
 __author__ = "bibow"
 
+import base64
 import logging
 import threading
 import traceback
 from decimal import Decimal
+from io import BytesIO
 from queue import Queue
 from typing import Any, Dict, List, Optional
 
+import httpx
 import openai
 import pendulum
+from httpx import Response
 
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Utility
@@ -84,6 +88,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         queue: Queue = None,
         stream_event: threading.Event = None,
         model_setting: Dict[str, Any] = None,
+        input_files: List[str, Any] = [],
     ) -> Optional[str]:
         """
         Sends a request to OpenAI API with support for both streaming and non-streaming responses.
@@ -105,6 +110,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
             # Add model-specific settings if provided
             if model_setting:
                 self.model_setting.update(model_setting)
+
+            if input_files:
+                input_messages = self._process_input_files(input_files, input_messages)
+
+            self._process_user_file_ids(input_messages[:-1])
 
             response = self.invoke_model(
                 **{
@@ -130,6 +140,106 @@ class OpenAIEventHandler(AIAgentEventHandler):
         except Exception as e:
             self.logger.error(f"Error in ask_model: {str(e)}")
             raise Exception(f"Failed to process model request: {str(e)}")
+
+    def _attach_files_into_code_interpreter(self, file_ids) -> bool:
+        # Find existing code_interpreter tool if it exists
+        code_interpreter_tool = next(
+            (
+                tool
+                for tool in self.model_setting.get("tools", [])
+                if tool.get("type") == "code_interpreter"
+            ),
+            None,
+        )
+
+        if not code_interpreter_tool:
+            return False
+
+        # Initialize file_ids list if it doesn't exist
+        if "container" not in code_interpreter_tool:
+            code_interpreter_tool["container"] = {"type": "auto"}
+        if "file_ids" not in code_interpreter_tool["container"]:
+            code_interpreter_tool["container"]["file_ids"] = []
+
+        # Append file_ids to existing code_interpreter tool and ensure uniqueness
+        code_interpreter_tool["container"]["file_ids"] = list(
+            set(code_interpreter_tool["container"]["file_ids"] + file_ids)
+        )
+
+        return True
+
+    def _process_input_files(
+        self, input_files: List[Dict[str, Any]], input_messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Process and upload input files, attaching them to either code interpreter or user message.
+
+        Args:
+            input_files: List of file dictionaries containing file data
+            input_messages: List of conversation messages
+
+        Returns:
+            Updated input_messages with file references
+        """
+        # Upload each file to OpenAI and store metadata
+        uploaded_files = []
+        for input_file in input_files:
+            file_data = dict(input_file, purpose="user_data")
+            uploaded_file = self.insert_file(**file_data)
+            uploaded_files.append(uploaded_file)
+            self.uploaded_files.append(uploaded_file)
+
+        # Extract file IDs from uploaded files
+        file_ids = [file["id"] for file in uploaded_files]
+
+        # First try to attach files to code interpreter
+        if self._attach_files_into_code_interpreter(file_ids):
+            return input_messages
+
+        # If code interpreter not available, attach to user message
+        if input_messages and input_messages[-1]["role"] == "user":
+            # Construct message content with original text and file references
+            message_content = [
+                {"type": "input_text", "text": input_messages[-1]["content"]}
+            ]
+            message_content.extend(
+                {"type": "input_file", "file_id": file_id} for file_id in file_ids
+            )
+
+            # Update the last message with combined content
+            input_messages[-1]["content"] = message_content
+
+        return input_messages
+
+    def _process_user_file_ids(self, input_messages: List[Dict[str, Any]]) -> None:
+        """
+        Process file IDs from user messages and attach them to code interpreter.
+        Extracts file IDs from user messages and attempts to attach them to the code interpreter tool.
+        Silently continues if message parsing fails.
+
+        Args:
+            input_messages: List of conversation messages to process
+        """
+        # Filter for only user messages
+        user_messages = [msg for msg in input_messages if msg["role"] == "user"]
+
+        for message in user_messages:
+            try:
+                # Parse message content and extract file IDs
+                message_content = Utility.json_loads(message["content"])
+                file_ids = [
+                    content["file_id"]
+                    for content in message_content
+                    if content.get("type") == "input_file" and "file_id" in content
+                ]
+
+                # Attempt to attach files to code interpreter if any found
+                if file_ids:
+                    self._attach_files_into_code_interpreter(file_ids)
+
+            except Exception:
+                # Continue silently if message parsing fails
+                continue
 
     def handle_function_call(
         self,
@@ -368,6 +478,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 content = content + output.content[0].text
             elif output.type == "web_search_call" and output.status == "completed":
                 continue
+            elif (
+                output.type == "code_interpreter_call" and output.status == "completed"
+            ):
+                continue
             elif output.type == "mcp_list_tools":
                 continue
             elif output.type == "mcp_call":
@@ -520,3 +634,71 @@ class OpenAIEventHandler(AIAgentEventHandler):
         # Signal that streaming has finished
         if stream_event:
             stream_event.set()
+
+    def get_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
+
+        file = self.client.files.retrieve(kwargs["file_id"])
+        openai_file = {
+            "id": file.id,
+            "object": file.object,
+            "filename": file.filename,
+            "purpose": file.purpose,
+            "created_at": pendulum.from_timestamp(file.created_at, tz="UTC"),
+            "bytes": file.bytes,
+        }
+        if "encoded_content" in kwargs and kwargs["encoded_content"] == True:
+            response: Response = self.client.files.content(kwargs["file_id"])
+            content = response.content  # Get the actual bytes data)
+            # Convert the content to a Base64-encoded string
+            openai_file["encoded_content"] = base64.b64encode(content).decode("utf-8")
+
+        return openai_file
+
+    def get_file_list(self, **kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if kwargs.get("purpose"):
+            file_list = self.client.files.list(purpose=kwargs["purpose"])
+        else:
+            file_list = self.client.files.list()
+        return [
+            {
+                "id": file.id,
+                "object": file.object,
+                "filename": file.filename,
+                "purpose": file.purpose,
+                "created_at": pendulum.from_timestamp(file.created_at, tz="UTC"),
+                "bytes": file.bytes,
+            }
+            for file in file_list.data
+        ]
+
+    def insert_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        purpose = kwargs["purpose"]
+
+        if "encoded_content" in kwargs:
+            encoded_content = kwargs["encoded_content"]
+            # Decode the Base64 string
+            decoded_content = base64.b64decode(encoded_content)
+
+            # Save the decoded content into a BytesIO object
+            content_io = BytesIO(decoded_content)
+
+            # Assign a filename to the BytesIO object
+            content_io.name = kwargs["filename"]
+        elif "file_url_link" in kwargs:
+            content_io = BytesIO(httpx.get(kwargs["file_url_link"]).content)
+        else:
+            raise Exception("No file content provided")
+
+        file = self.client.files.create(file=content_io, purpose=purpose)
+        return {
+            "id": file.id,
+            "object": file.object,
+            "filename": file.filename,
+            "purpose": file.purpose,
+            "created_at": pendulum.from_timestamp(file.created_at, tz="UTC"),
+            "bytes": file.bytes,
+        }
+
+    def delete_file(self, **kwargs: Dict[str, Any]) -> None:
+        result = self.client.files.delete(kwargs["file_id"])
+        return result.deleted
