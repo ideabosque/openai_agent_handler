@@ -54,16 +54,16 @@ class OpenAIEventHandler(AIAgentEventHandler):
         AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
         self.client = openai.OpenAI(
-            api_key=agent["configuration"].get("openai_api_key")
+            api_key=self.agent["configuration"].get("openai_api_key")
         )
         self.model_setting = dict(
             {
                 k: float(v) if isinstance(v, Decimal) else v
-                for k, v in agent["configuration"].items()
+                for k, v in self.agent["configuration"].items()
                 if k not in ["openai_api_key"]
             },
             **{
-                "instructions": agent["instructions"],
+                "instructions": self.agent["instructions"],
             },
         )
 
