@@ -221,7 +221,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             input_messages: List of conversation messages to process
         """
         # Filter for only user messages
-        user_messages = [msg for msg in input_messages if msg["role"] == "user"]
+        user_messages = [msg for msg in input_messages if msg.get("role") == "user"]
 
         for message in user_messages:
             try:
@@ -632,16 +632,17 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             "MCP Approval Request is not currently supported"
                         )
 
-                    for ann in getattr(
-                        chunk.response.output[-1].content[-1], "annotations", []
-                    ):
-                        if ann.type == "container_file_citation":
-                            output_files.append(
-                                {
-                                    "filename": ann.filename,
-                                    "file_id": ann.file_id,
-                                }
-                            )
+                    if hasattr(chunk.response.output[-1], "content"):
+                        for ann in getattr(
+                            chunk.response.output[-1].content[-1], "annotations", []
+                        ):
+                            if ann.type == "container_file_citation":
+                                output_files.append(
+                                    {
+                                        "filename": ann.filename,
+                                        "file_id": ann.file_id,
+                                    }
+                                )
 
                     message_id = chunk.response.output[-1].id
                     role = chunk.response.output[-1].role
