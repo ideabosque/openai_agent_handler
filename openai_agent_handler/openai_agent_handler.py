@@ -187,7 +187,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             file_data = dict(input_file, purpose="user_data")
             uploaded_file = self.insert_file(**file_data)
             uploaded_files.append(uploaded_file)
-            self.uploaded_files.append(uploaded_file)
+            self.uploaded_files.append({"file_id": uploaded_file["id"]})
 
         # Extract file IDs from uploaded files
         file_ids = [file["id"] for file in uploaded_files]
@@ -461,6 +461,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         message_id = None
         role = None
         content = ""
+        output_files = []
 
         for output in response.output:
             # If it's a function call
@@ -476,6 +477,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 message_id = output.id if message_id is None else message_id
                 role = output.role if role is None else role
                 content = content + output.content[0].text
+                for ann in getattr(output.content[0], "annotations", []):
+                    if ann.type == "container_file_citation":
+                        output_files.append(
+                            {
+                                "filename": ann.filename,
+                                "file_id": ann.file_id,
+                            }
+                        )
             elif output.type == "web_search_call" and output.status == "completed":
                 continue
             elif (
@@ -497,6 +506,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             "message_id": message_id,
             "role": role,
             "content": content,
+            "output_files": output_files,
         }
 
     def handle_stream(
@@ -517,6 +527,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         message_id = None
         role = None
         self.accumulated_text = ""
+        output_files = []
         accumulated_partial_json = ""
         accumulated_partial_text = ""
         output_format = (
@@ -589,7 +600,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 )
             elif chunk.type == "response.output_item.done":
                 pass
-            # If streaming is completed
             elif chunk.type == "response.completed":
                 self.logger.info(f"Stream completed, run_id={chunk.response.id}")
 
@@ -622,6 +632,17 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             "MCP Approval Request is not currently supported"
                         )
 
+                    for ann in getattr(
+                        chunk.response.output[-1].content[-1], "annotations", []
+                    ):
+                        if ann.type == "container_file_citation":
+                            output_files.append(
+                                {
+                                    "filename": ann.filename,
+                                    "file_id": ann.file_id,
+                                }
+                            )
+
                     message_id = chunk.response.output[-1].id
                     role = chunk.response.output[-1].role
 
@@ -629,6 +650,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             "message_id": message_id,
             "role": role,
             "content": self.accumulated_text,
+            "output_files": output_files,
         }
 
         # Signal that streaming has finished
@@ -638,7 +660,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
     def get_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
         file = self.client.files.retrieve(kwargs["file_id"])
-        openai_file = {
+        uploaded_file = {
             "id": file.id,
             "object": file.object,
             "filename": file.filename,
@@ -650,9 +672,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             response: Response = self.client.files.content(kwargs["file_id"])
             content = response.content  # Get the actual bytes data)
             # Convert the content to a Base64-encoded string
-            openai_file["encoded_content"] = base64.b64encode(content).decode("utf-8")
+            uploaded_file["encoded_content"] = base64.b64encode(content).decode("utf-8")
 
-        return openai_file
+        return uploaded_file
 
     def get_file_list(self, **kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
         if kwargs.get("purpose"):
