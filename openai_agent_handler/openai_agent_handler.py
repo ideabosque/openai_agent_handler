@@ -709,6 +709,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             content_io.name = kwargs["filename"]
         elif "file_uri" in kwargs:
             content_io = BytesIO(httpx.get(kwargs["file_uri"]).content)
+            content_io.name = kwargs["filename"]
         else:
             raise Exception("No file content provided")
 
