@@ -182,15 +182,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
             Updated input_messages with file references
         """
         # Upload each file to OpenAI and store metadata
-        uploaded_files = []
+        file_ids = []
         for input_file in input_files:
             file_data = dict(input_file, purpose="user_data")
             uploaded_file = self.insert_file(**file_data)
-            uploaded_files.append(uploaded_file)
+            file_ids.append(uploaded_file["id"])
             self.uploaded_files.append({"file_id": uploaded_file["id"]})
-
-        # Extract file IDs from uploaded files
-        file_ids = [file["id"] for file in uploaded_files]
 
         # First try to attach files to code interpreter
         if self._attach_files_into_code_interpreter(file_ids):
