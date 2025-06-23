@@ -58,7 +58,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
         )
         self.model_setting = dict(
             {
-                k: float(v) if isinstance(v, Decimal) else v
+                k: (
+                    (int(v) if k == "max_output_tokens" else float(v))
+                    if isinstance(v, Decimal)
+                    else v
+                )
                 for k, v in self.agent["configuration"].items()
                 if k not in ["openai_api_key"]
             },
