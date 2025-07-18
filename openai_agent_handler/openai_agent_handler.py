@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 import openai
 import pendulum
+import requests
 from httpx import Response
 
 from ai_agent_handler import AIAgentEventHandler
@@ -484,6 +485,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             {
                                 "filename": ann.filename,
                                 "file_id": ann.file_id,
+                                "container_id": ann.container_id,
                             }
                         )
             elif output.type == "web_search_call" and output.status == "completed":
@@ -642,6 +644,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                     {
                                         "filename": ann.filename,
                                         "file_id": ann.file_id,
+                                        "container_id": ann.container_id,
                                     }
                                 )
 
@@ -727,3 +730,38 @@ class OpenAIEventHandler(AIAgentEventHandler):
     def delete_file(self, **kwargs: Dict[str, Any]) -> None:
         result = self.client.files.delete(kwargs["file_id"])
         return result.deleted
+
+    def get_container_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Get container file metadata and optionally content"""
+        container_id = kwargs["container_id"]
+        file_id = kwargs["file_id"]
+        api_key = self.agent["configuration"].get("openai_api_key")
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        # Get file metadata
+        metadata_url = (
+            f"https://api.openai.com/v1/containers/{container_id}/files/{file_id}"
+        )
+        metadata_response = requests.get(metadata_url, headers=headers)
+        metadata_response.raise_for_status()
+        file = metadata_response.json()
+
+        file_data = {
+            "id": file["id"],
+            "object": file["object"],
+            "created_at": pendulum.from_timestamp(file["created_at"], tz="UTC"),
+            "bytes": file["bytes"],
+            "container_id": file["container_id"],
+            "path": file["path"],
+            "source": file["source"],
+        }
+
+        # Get file content if requested
+        if "encoded_content" in kwargs and kwargs["encoded_content"] == True:
+            content_url = f"{metadata_url}/content"
+            content_response = requests.get(content_url, headers=headers)
+            content_response.raise_for_status()
+            content = content_response.content
+            file_data["encoded_content"] = base64.b64encode(content).decode("utf-8")
+
+        return file_data
