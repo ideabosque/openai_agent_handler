@@ -731,7 +731,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         result = self.client.files.delete(kwargs["file_id"])
         return result.deleted
 
-    def get_container_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def get_output_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """Get container file metadata and optionally content"""
         container_id = kwargs["container_id"]
         file_id = kwargs["file_id"]
