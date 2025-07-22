@@ -82,7 +82,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         try:
             variables = dict(self.model_setting, **kwargs)
-            self.logger.info(f"variables: {variables}.")
             return self.client.responses.create(**variables)
         except Exception as e:
             self.logger.error(f"Error invoking model: {str(e)}")
