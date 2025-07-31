@@ -500,6 +500,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 continue
             elif output.type == "mcp_approval_request":
                 raise Exception("MCP Approval Request is not currently supported")
+            elif output.type == "reasoning":
+                continue
             else:
                 raise Exception(
                     f"Unknown response type: {output.type} or status: {output.status}"
