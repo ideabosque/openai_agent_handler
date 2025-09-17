@@ -57,20 +57,18 @@ class OpenAIEventHandler(AIAgentEventHandler):
         self.client = openai.OpenAI(
             api_key=self.agent["configuration"].get("openai_api_key")
         )
-        self.model_setting = dict(
-            {
-                k: (
-                    (int(v) if k == "max_output_tokens" else float(v))
-                    if isinstance(v, Decimal)
-                    else v
-                )
-                for k, v in self.agent["configuration"].items()
-                if k not in ["openai_api_key"]
-            },
-            **{
-                "instructions": self.agent["instructions"],
-            },
-        )
+
+        self.model_setting = {"instructions": self.agent["instructions"]}
+        for k, v in self.agent["configuration"].items():
+            if k in ["openai_api_key"]:
+                continue
+
+            if k == "max_output_tokens":
+                v = int(v)
+            elif k in ["temperature", "top_p"]:
+                v = float(v)
+
+            self.model_setting[k] = v
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
         """
