@@ -465,8 +465,13 @@ class OpenAIEventHandler(AIAgentEventHandler):
         output_files = []
 
         for output in response.output:
+            # If it's a reasoning
+            if output.type == "reasoning":
+                input_messages.append(
+                    {"type": "reasoning", "id": output.id, "summary": output.summary}
+                )
             # If it's a function call
-            if output.type == "function_call":
+            elif output.type == "function_call":
                 input_messages = self.handle_function_call(
                     output,
                     input_messages,
@@ -616,8 +621,17 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         if hasattr(output, "type")
                     ):
                         for output in chunk.response.output:
+                            # If it's a reasoning
+                            if output.type == "reasoning":
+                                input_messages.append(
+                                    {
+                                        "type": "reasoning",
+                                        "id": output.id,
+                                        "summary": output.summary,
+                                    }
+                                )
                             # If it's a function call
-                            if output.type == "function_call":
+                            elif output.type == "function_call":
                                 input_messages = self.handle_function_call(
                                     output, input_messages
                                 )
