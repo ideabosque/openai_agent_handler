@@ -463,23 +463,35 @@ class OpenAIEventHandler(AIAgentEventHandler):
         role = None
         content = ""
         output_files = []
+        reasoning_item = None
 
         for output in response.output:
-            # If it's a reasoning
+            # Handle reasoning - store it and continue
             if output.type == "reasoning":
-                input_messages.append(
-                    {"type": "reasoning", "id": output.id, "summary": output.summary}
-                )
-            # If it's a function call
-            elif output.type == "function_call":
+                reasoning_item = {
+                    "type": "reasoning",
+                    "id": output.id,
+                    "summary": output.summary
+                }
+                continue
+
+            # Handle function_call - add reasoning if exists, then process
+            if output.type == "function_call":
+                if reasoning_item is not None:
+                    input_messages.append(reasoning_item)
+                reasoning_item = None
+
                 input_messages = self.handle_function_call(
                     output,
                     input_messages,
                 )
                 self.ask_model(input_messages)
                 return
-            # If it's a normal message
-            elif output.type == "message" and output.status == "completed":
+
+            # For all other types, reset reasoning and process normally
+            reasoning_item = None
+
+            if output.type == "message" and output.status == "completed":
                 message_id = output.id if message_id is None else message_id
                 role = output.role if role is None else role
                 content = content + output.content[0].text
@@ -504,8 +516,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 continue
             elif output.type == "mcp_approval_request":
                 raise Exception("MCP Approval Request is not currently supported")
-            elif output.type == "reasoning":
-                continue
             else:
                 raise Exception(
                     f"Unknown response type: {output.type} or status: {output.status}"
@@ -620,21 +630,30 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         for output in chunk.response.output
                         if hasattr(output, "type")
                     ):
+                        reasoning_item = None
                         for output in chunk.response.output:
-                            # If it's a reasoning
+                            # Handle reasoning - store it and continue
                             if output.type == "reasoning":
-                                input_messages.append(
-                                    {
-                                        "type": "reasoning",
-                                        "id": output.id,
-                                        "summary": output.summary,
-                                    }
-                                )
-                            # If it's a function call
-                            elif output.type == "function_call":
+                                reasoning_item = {
+                                    "type": "reasoning",
+                                    "id": output.id,
+                                    "summary": output.summary,
+                                }
+                                continue
+
+                            # Handle function_call - add reasoning if exists, then process
+                            if output.type == "function_call":
+                                if reasoning_item is not None:
+                                    input_messages.append(reasoning_item)
+                                reasoning_item = None
+
                                 input_messages = self.handle_function_call(
                                     output, input_messages
                                 )
+                                continue
+
+                            # For all other types, reset reasoning
+                            reasoning_item = None
 
                         self.ask_model(
                             input_messages, queue=queue, stream_event=stream_event
