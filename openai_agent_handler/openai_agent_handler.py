@@ -355,7 +355,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         try:
             arguments = Utility.json_loads(function_call_data.get("arguments", "{}"))
-            arguments["endpoint_id"] = self._endpoint_id
 
             return arguments
 
@@ -471,7 +470,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 reasoning_item = {
                     "type": "reasoning",
                     "id": output.id,
-                    "summary": output.summary
+                    "summary": output.summary,
                 }
                 continue
 
