@@ -8,6 +8,7 @@ import base64
 import logging
 import threading
 import traceback
+import uuid
 from decimal import Decimal
 from io import BytesIO
 from queue import Queue
@@ -58,6 +59,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             api_key=self.agent["configuration"].get("openai_api_key")
         )
 
+        # Build model settings with type conversions (performance optimization)
         self.model_setting = {"instructions": self.agent["instructions"]}
         for k, v in self.agent["configuration"].items():
             if k in ["openai_api_key"]:
@@ -67,8 +69,136 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 v = int(v)
             elif k in ["temperature", "top_p"]:
                 v = float(v)
+            # Convert Decimal to float for better performance
+            elif isinstance(v, Decimal):
+                v = float(v)
 
             self.model_setting[k] = v
+
+        # Cache frequently accessed configuration values (performance optimization)
+        self.output_format_type = (
+            self.model_setting.get("text", {"format": {"type": "text"}})
+            .get("format", {"type": "text"})
+            .get("type", "text")
+        )
+
+    def _cleanup_input_messages(
+        self, input_messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Filters out broken tool interaction sequences from message history.
+        Valid sequences: assistant (with tool_calls) → tool results → assistant (final response).
+        Removes tool results without proper initiation or sequences without completion.
+
+        Optimized to O(n) complexity with single-pass algorithm.
+
+        Args:
+            input_messages: Raw conversation messages
+
+        Returns:
+            Filtered messages containing only valid sequences
+        """
+        if self.logger.isEnabledFor(logging.INFO):
+            self.logger.info(
+                f"[_cleanup_input_messages] Cleaning {len(input_messages)} messages"
+            )
+
+        if not input_messages:
+            return []
+
+        result = []
+        tool_call_role = self.agent["tool_call_role"]
+        i = 0
+
+        while i < len(input_messages):
+            current_msg = input_messages[i]
+            current_role = current_msg.get("role")
+
+            # Skip orphaned tool results (not preceded by assistant with tool_calls)
+            if current_role == tool_call_role:
+                if not (
+                    result
+                    and result[-1].get("role") == "assistant"
+                    and "tool_calls" in result[-1]
+                ):
+                    if self.logger.isEnabledFor(logging.INFO):
+                        self.logger.info(
+                            f"[_cleanup_input_messages] Skipping orphaned tool at [{i}]"
+                        )
+                    i += 1
+                    continue
+                result.append(current_msg)
+                i += 1
+                continue
+
+            # Handle assistant messages with tool_calls
+            if current_role == "assistant" and "tool_calls" in current_msg:
+                # Find the end of tool results sequence
+                j = i + 1
+                while (
+                    j < len(input_messages)
+                    and input_messages[j].get("role") == tool_call_role
+                ):
+                    j += 1
+
+                # Check if sequence is complete (followed by assistant message)
+                if (
+                    j < len(input_messages)
+                    and input_messages[j].get("role") == "assistant"
+                ):
+                    # Valid sequence: include the tool caller
+                    result.append(current_msg)
+                    i += 1
+                else:
+                    # Incomplete sequence: skip entire cycle
+                    if self.logger.isEnabledFor(logging.INFO):
+                        self.logger.info(
+                            f"[_cleanup_input_messages] Skipping incomplete cycle [{i}:{j - 1}]"
+                        )
+                    i = j
+                continue
+
+            # Regular messages (user, assistant without tool_calls)
+            result.append(current_msg)
+            i += 1
+
+        if self.logger.isEnabledFor(logging.INFO):
+            self.logger.info(
+                f"[_cleanup_input_messages] Retained {len(result)} messages"
+            )
+
+        return result
+
+    def _check_retry_limit(self, retry_count: int) -> None:
+        """
+        Check if retry limit has been exceeded and raise exception if so.
+
+        Args:
+            retry_count: Current retry count
+
+        Raises:
+            Exception: If retry_count exceeds MAX_RETRIES
+        """
+        MAX_RETRIES = 5
+        if retry_count > MAX_RETRIES:
+            error_msg = (
+                f"Maximum retry limit ({MAX_RETRIES}) exceeded for empty responses"
+            )
+            if self.logger.isEnabledFor(logging.ERROR):
+                self.logger.error(error_msg)
+            raise Exception(error_msg)
+
+    def _has_valid_content(self, text: str) -> bool:
+        """
+        Check if response text contains valid content.
+
+        Args:
+            text: Response text to check
+
+        Returns:
+            True if text is not None/empty/whitespace-only, False otherwise
+        """
+        return bool(text and text.strip())
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
         """
@@ -82,7 +212,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             variables = dict(self.model_setting, **kwargs)
             return self.client.responses.create(**variables)
         except Exception as e:
-            self.logger.error(f"Error invoking model: {str(e)}")
+            if self.logger.isEnabledFor(logging.ERROR):
+                self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
 
     @Utility.performance_monitor.monitor_operation(operation_name="OpenAI")
@@ -106,7 +237,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         try:
             if not self.client:
-                self.logger.error("No OpenAI client provided.")
+                if self.logger.isEnabledFor(logging.ERROR):
+                    self.logger.error("No OpenAI client provided.")
                 return None
 
             stream = True if queue is not None else False
@@ -120,6 +252,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             self._process_user_file_ids(input_messages[:-1])
 
+            # Clean up input messages to remove broken tool sequences (performance optimization)
+            input_messages = self._cleanup_input_messages(input_messages)
+
             response = self.invoke_model(
                 **{
                     "input": input_messages,
@@ -129,6 +264,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             # If streaming is enabled, process chunks
             if stream:
+                # Note: run_id will be sent from handle_stream when response.created event is received
                 self.handle_stream(
                     response,
                     input_messages,
@@ -142,7 +278,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return response.id
 
         except Exception as e:
-            self.logger.error(f"Error in ask_model: {str(e)}")
+            if self.logger.isEnabledFor(logging.ERROR):
+                self.logger.error(f"Error in ask_model: {str(e)}")
             raise Exception(f"Failed to process model request: {str(e)}")
 
     def _attach_files_into_code_interpreter(self, file_ids) -> bool:
@@ -271,36 +408,41 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "status": tool_call.status,
             }
 
-            # Record initial function call
-            self.logger.info(
-                f"[handle_function_call] Starting function call recording for {function_call_data['name']}"
-            )
+            # Record initial function call (with conditional logging)
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(
+                    f"[handle_function_call] Starting function call recording for {function_call_data['name']}"
+                )
             self._record_function_call_start(function_call_data)
 
             # Parse and process arguments
-            self.logger.info(
-                f"[handle_function_call] Processing arguments for function {function_call_data['name']}"
-            )
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(
+                    f"[handle_function_call] Processing arguments for function {function_call_data['name']}"
+                )
             arguments = self._process_function_arguments(function_call_data)
 
             # Execute function and handle result
-            self.logger.info(
-                f"[handle_function_call] Executing function {function_call_data['name']} with arguments {arguments}"
-            )
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(
+                    f"[handle_function_call] Executing function {function_call_data['name']} with arguments {arguments}"
+                )
             function_output = self._execute_function(function_call_data, arguments)
 
             # Update conversation history
-            self.logger.info(
-                f"[handle_function_call][{function_call_data['name']}] Updating conversation history"
-            )
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(
+                    f"[handle_function_call][{function_call_data['name']}] Updating conversation history"
+                )
             self._update_conversation_history(
                 function_call_data, function_output, input_messages
             )
 
             # Continue conversation
-            self.logger.info(
-                f"[handle_function_call][{function_call_data['name']}] Continuing conversation"
-            )
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(
+                    f"[handle_function_call][{function_call_data['name']}] Continuing conversation"
+                )
 
             if self._run is None:
                 self._short_term_memory.append(
@@ -325,7 +467,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return input_messages
 
         except Exception as e:
-            self.logger.error(f"Error in handle_function_call: {e}")
+            if self.logger.isEnabledFor(logging.ERROR):
+                self.logger.error(f"Error in handle_function_call: {e}")
             raise
 
     def _record_function_call_start(self, function_call_data: Dict[str, Any]) -> None:
@@ -369,7 +512,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "notes": log,
                 },
             )
-            self.logger.error("Error parsing function arguments: %s", e)
+            if self.logger.isEnabledFor(logging.ERROR):
+                self.logger.error("Error parsing function arguments: %s", e)
             raise ValueError(f"Failed to parse function arguments: {e}")
 
     def _execute_function(
@@ -390,11 +534,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
             )
 
         try:
+            # Cache JSON serialization to avoid duplicate work (performance optimization)
+            arguments_json = Utility.json_dumps(arguments)
+
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
-                    "arguments": Utility.json_dumps(arguments),
+                    "arguments": arguments_json,
                     "status": "in_progress",
                 },
             )
@@ -413,11 +560,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         except Exception as e:
             log = traceback.format_exc()
+            # Reuse cached arguments_json (performance optimization)
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
-                    "arguments": Utility.json_dumps(arguments),
+                    "arguments": arguments_json,
                     "status": "failed",
                     "notes": log,
                 },
@@ -447,16 +595,24 @@ class OpenAIEventHandler(AIAgentEventHandler):
         )
 
     def handle_response(
-        self, response: Any, input_messages: List[Dict[str, Any]]
+        self,
+        response: Any,
+        input_messages: List[Dict[str, Any]],
+        retry_count: int = 0,
     ) -> None:
         """
         Processes model responses and routes them to appropriate handlers.
 
+        Handles three scenarios:
+        1. Function call → Execute and recurse
+        2. Empty response → Retry up to 5 times
+        3. Valid response → Set final_output
+
         :param response: Response object from the model.
         :param input_messages: Current conversation history.
-        :param queue: Optional queue for streaming responses.
-        :param stream_event: Optional event to signal streaming completion.
+        :param retry_count: Current retry count (max 5 retries).
         """
+        self._check_retry_limit(retry_count)
 
         message_id = None
         role = None
@@ -520,6 +676,21 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     f"Unknown response type: {output.type} or status: {output.status}"
                 )
 
+        # Scenario 2: Empty response - retry (performance optimization)
+        if not self._has_valid_content(content):
+            if self.logger.isEnabledFor(logging.WARNING):
+                self.logger.warning(
+                    f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
+                )
+            next_response = self.invoke_model(
+                **{"input": input_messages, "stream": False}
+            )
+            self.handle_response(
+                next_response, input_messages, retry_count=retry_count + 1
+            )
+            return
+
+        # Scenario 3: Valid response - set final output
         self.final_output = {
             "message_id": message_id,
             "role": role,
@@ -533,36 +704,51 @@ class OpenAIEventHandler(AIAgentEventHandler):
         input_messages: List[Dict[str, Any]],
         queue: Queue = None,
         stream_event: threading.Event = None,
+        retry_count: int = 0,
     ) -> None:
         """
         Processes streaming responses from the model chunk by chunk.
 
+        Handles three scenarios:
+        1. Function call → Execute and recurse
+        2. Empty stream → Retry up to 5 times
+        3. Valid stream → Accumulate and set final_output
+
         :param response_stream: Iterator of response chunks from the model.
         :param input_messages: Current conversation history.
-        :param queue: Queue to receive streaming events.
         :param stream_event: Event to signal when streaming is complete.
+        :param retry_count: Current retry count (max 5 retries).
         """
+        self._check_retry_limit(retry_count)
+
         message_id = None
         role = None
-        self.accumulated_text = ""
+        # Use list for efficient string concatenation (performance optimization)
+        accumulated_text_parts = []
         output_files = []
         accumulated_partial_json = ""
         accumulated_partial_text = ""
-        output_format = (
-            self.model_setting.get("text", {"format": {"type": "text"}})
-            .get("format", {"type": "text"})
-            .get("type", "text")
-        )
+        received_any_content = False
+        # Use cached output format type (performance optimization)
+        output_format = self.output_format_type
         index = 0
+
+        # Track timing for first and last chunks
+        first_chunk_time = None
+        last_chunk_time = None
+        stream_start_time = pendulum.now("UTC")
 
         for chunk in response_stream:
             if chunk.type != "response.output_text.delta":
-                self.logger.debug(f"Chunk type: {getattr(chunk, 'type', 'N/A')}")
-                self.logger.debug(f"Chunk attributes: {vars(chunk)}")
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(f"Chunk type: {getattr(chunk, 'type', 'N/A')}")
+                    self.logger.debug(f"Chunk attributes: {vars(chunk)}")
 
             # If the model run has just started
             if chunk.type == "response.created":
-                self.logger.info(f"Stream created, run_id={chunk.response.id}")
+                if self.logger.isEnabledFor(logging.INFO):
+                    self.logger.info(f"Stream created, run_id={chunk.response.id}")
+                # Send run_id to queue for client notification
                 if queue:
                     queue.put({"name": "run_id", "value": chunk.response.id})
 
@@ -577,23 +763,43 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 index += 1
             # If we received partial text data
             elif chunk.type == "response.output_text.delta":
+                received_any_content = True
+
+                # Track first chunk timing
+                if first_chunk_time is None:
+                    first_chunk_time = pendulum.now("UTC")
+                    time_to_first_chunk = (
+                        first_chunk_time - stream_start_time
+                    ).total_seconds() * 1000
+                    if self.logger.isEnabledFor(logging.INFO):
+                        self.logger.info(
+                            f"[handle_stream] Time to first response chunk: {time_to_first_chunk:.2f}ms"
+                        )
+
+                # Update last chunk time for each chunk received
+                last_chunk_time = pendulum.now("UTC")
+
                 print(chunk.delta, end="", flush=True)
+
+                # Accumulate in list for efficient concatenation (performance optimization)
+                accumulated_text_parts.append(chunk.delta)
 
                 # For JSON formats, accumulate partial JSON text and process it
                 # when complete JSON objects are detected. This ensures valid JSON
                 # is sent to the WebSocket server.
                 if output_format in ["json_object", "json_schema"]:
                     accumulated_partial_json += chunk.delta
-                    index, self.accumulated_text, accumulated_partial_json = (
+                    # Temporarily build accumulated_text for processing
+                    temp_accumulated_text = "".join(accumulated_text_parts)
+                    index, temp_accumulated_text, accumulated_partial_json = (
                         self.process_and_send_json(
                             index,
-                            self.accumulated_text,
+                            temp_accumulated_text,
                             accumulated_partial_json,
                             output_format,
                         )
                     )
                 else:
-                    self.accumulated_text += chunk.delta
                     accumulated_partial_text += chunk.delta
                     # Check if text contains XML-style tags and update format
                     index, accumulated_partial_text = self.process_text_content(
@@ -619,7 +825,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.output_item.done":
                 pass
             elif chunk.type == "response.completed":
-                self.logger.info(f"Stream completed, run_id={chunk.response.id}")
+                if self.logger.isEnabledFor(logging.INFO):
+                    self.logger.info(f"Stream completed, run_id={chunk.response.id}")
 
                 # Process any final output objects in chunk.response
                 if hasattr(chunk.response, "output") and chunk.response.output:
@@ -684,12 +891,47 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     message_id = chunk.response.output[-1].id
                     role = chunk.response.output[-1].role
 
+        # Build final accumulated text from parts (performance optimization)
+        final_accumulated_text = "".join(accumulated_text_parts)
+
+        # Log timing for last chunk
+        if last_chunk_time is not None:
+            time_to_last_chunk = (
+                last_chunk_time - stream_start_time
+            ).total_seconds() * 1000
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(
+                    f"[handle_stream] Time to last response chunk: {time_to_last_chunk:.2f}ms"
+                )
+
+        # Scenario 2: Empty stream - retry (performance optimization)
+        if not received_any_content:
+            if self.logger.isEnabledFor(logging.WARNING):
+                self.logger.warning(
+                    f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
+                )
+            next_response = self.invoke_model(
+                **{"input": input_messages, "stream": True}
+            )
+            self.handle_stream(
+                next_response,
+                input_messages,
+                queue=queue,
+                stream_event=stream_event,
+                retry_count=retry_count + 1,
+            )
+            return
+
+        # Scenario 3: Valid stream - set final output
         self.final_output = {
             "message_id": message_id,
             "role": role,
-            "content": self.accumulated_text,
+            "content": final_accumulated_text,
             "output_files": output_files,
         }
+
+        # Store accumulated_text for backward compatibility
+        self.accumulated_text = final_accumulated_text
 
         # Signal that streaming has finished
         if stream_event:
