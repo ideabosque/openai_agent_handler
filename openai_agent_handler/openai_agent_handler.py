@@ -59,11 +59,13 @@ class OpenAIEventHandler(AIAgentEventHandler):
         # This significantly reduces the connection setup time between consecutive API calls
         http_client = httpx.Client(
             limits=httpx.Limits(
-                max_connections=100,      # Allow up to 100 concurrent connections
+                max_connections=100,  # Allow up to 100 concurrent connections
                 max_keepalive_connections=20,  # Keep 20 connections alive for reuse
-                keepalive_expiry=30.0,    # Keep connections alive for 30 seconds
+                keepalive_expiry=30.0,  # Keep connections alive for 30 seconds
             ),
-            timeout=httpx.Timeout(120.0, connect=10.0),  # 10s connect, 120s total timeout
+            timeout=httpx.Timeout(
+                120.0, connect=10.0
+            ),  # 10s connect, 120s total timeout
             http2=True,  # Enable HTTP/2 for better performance
         )
 
@@ -94,93 +96,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             .get("format", {"type": "text"})
             .get("type", "text")
         )
-
-    def _cleanup_input_messages(
-        self, input_messages: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Filters out broken tool interaction sequences from message history.
-        Valid sequences: assistant (with tool_calls) → tool results → assistant (final response).
-        Removes tool results without proper initiation or sequences without completion.
-
-        Optimized to O(n) complexity with single-pass algorithm.
-
-        Args:
-            input_messages: Raw conversation messages
-
-        Returns:
-            Filtered messages containing only valid sequences
-        """
-        if self.logger.isEnabledFor(logging.INFO):
-            self.logger.info(
-                f"[_cleanup_input_messages] Cleaning {len(input_messages)} messages"
-            )
-
-        if not input_messages:
-            return []
-
-        result = []
-        tool_call_role = self.agent["tool_call_role"]
-        i = 0
-
-        while i < len(input_messages):
-            current_msg = input_messages[i]
-            current_role = current_msg.get("role")
-
-            # Skip orphaned tool results (not preceded by assistant with tool_calls)
-            if current_role == tool_call_role:
-                if not (
-                    result
-                    and result[-1].get("role") == "assistant"
-                    and "tool_calls" in result[-1]
-                ):
-                    if self.logger.isEnabledFor(logging.INFO):
-                        self.logger.info(
-                            f"[_cleanup_input_messages] Skipping orphaned tool at [{i}]"
-                        )
-                    i += 1
-                    continue
-                result.append(current_msg)
-                i += 1
-                continue
-
-            # Handle assistant messages with tool_calls
-            if current_role == "assistant" and "tool_calls" in current_msg:
-                # Find the end of tool results sequence
-                j = i + 1
-                while (
-                    j < len(input_messages)
-                    and input_messages[j].get("role") == tool_call_role
-                ):
-                    j += 1
-
-                # Check if sequence is complete (followed by assistant message)
-                if (
-                    j < len(input_messages)
-                    and input_messages[j].get("role") == "assistant"
-                ):
-                    # Valid sequence: include the tool caller
-                    result.append(current_msg)
-                    i += 1
-                else:
-                    # Incomplete sequence: skip entire cycle
-                    if self.logger.isEnabledFor(logging.INFO):
-                        self.logger.info(
-                            f"[_cleanup_input_messages] Skipping incomplete cycle [{i}:{j - 1}]"
-                        )
-                    i = j
-                continue
-
-            # Regular messages (user, assistant without tool_calls)
-            result.append(current_msg)
-            i += 1
-
-        if self.logger.isEnabledFor(logging.INFO):
-            self.logger.info(
-                f"[_cleanup_input_messages] Retained {len(result)} messages"
-            )
-
-        return result
 
     def _check_retry_limit(self, retry_count: int) -> None:
         """
@@ -220,7 +135,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         Returns:
             Elapsed time in milliseconds, or 0 if global start time not set
         """
-        if not hasattr(self, '_global_start_time') or self._global_start_time is None:
+        if not hasattr(self, "_global_start_time") or self._global_start_time is None:
             return 0.0
         return (pendulum.now("UTC") - self._global_start_time).total_seconds() * 1000
 
@@ -251,7 +166,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             invoke_time = (invoke_end - invoke_start).total_seconds() * 1000
             if self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
-                self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: API call returned (took {invoke_time:.2f}ms)")
+                self.logger.info(
+                    f"[TIMELINE] T+{elapsed:.2f}ms: API call returned (took {invoke_time:.2f}ms)"
+                )
 
             return result
         except Exception as e:
@@ -282,22 +199,26 @@ class OpenAIEventHandler(AIAgentEventHandler):
         ask_model_start = pendulum.now("UTC")
 
         # Track recursion depth to identify top-level vs recursive calls
-        if not hasattr(self, '_ask_model_depth'):
+        if not hasattr(self, "_ask_model_depth"):
             self._ask_model_depth = 0
 
         self._ask_model_depth += 1
-        is_top_level = (self._ask_model_depth == 1)
+        is_top_level = self._ask_model_depth == 1
 
         # Initialize global start time only on top-level ask_model call
         # Recursive calls will use the same start time for the entire run timeline
         if is_top_level:
             self._global_start_time = ask_model_start
             if self.logger.isEnabledFor(logging.INFO):
-                self.logger.info(f"[TIMELINE] T+0ms: Run started - First ask_model call")
+                self.logger.info(
+                    f"[TIMELINE] T+0ms: Run started - First ask_model call"
+                )
         else:
             if self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
-                self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Recursive ask_model call started")
+                self.logger.info(
+                    f"[TIMELINE] T+{elapsed:.2f}ms: Recursive ask_model call started"
+                )
 
         try:
             if not self.client:
@@ -318,16 +239,19 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             # Clean up input messages to remove broken tool sequences (performance optimization)
             cleanup_start = pendulum.now("UTC")
-            input_messages = self._cleanup_input_messages(input_messages)
             cleanup_end = pendulum.now("UTC")
             cleanup_time = (cleanup_end - cleanup_start).total_seconds() * 1000
 
             # Track total preparation time before API call
             preparation_end = pendulum.now("UTC")
-            preparation_time = (preparation_end - ask_model_start).total_seconds() * 1000
+            preparation_time = (
+                preparation_end - ask_model_start
+            ).total_seconds() * 1000
             if self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
-                self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)")
+                self.logger.info(
+                    f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
+                )
 
             response = self.invoke_model(
                 **{
@@ -365,7 +289,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             if self._ask_model_depth == 0:
                 if self.logger.isEnabledFor(logging.INFO):
                     elapsed = self._get_elapsed_time()
-                    self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Run complete - Resetting timeline")
+                    self.logger.info(
+                        f"[TIMELINE] T+{elapsed:.2f}ms: Run complete - Resetting timeline"
+                    )
                 self._global_start_time = None
 
     def _attach_files_into_code_interpreter(self, file_ids) -> bool:
@@ -556,10 +482,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             # Log function call execution time
             function_call_end = pendulum.now("UTC")
-            function_call_time = (function_call_end - function_call_start).total_seconds() * 1000
+            function_call_time = (
+                function_call_end - function_call_start
+            ).total_seconds() * 1000
             if self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
-                self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Function '{function_call_data['name']}' complete (took {function_call_time:.2f}ms)")
+                self.logger.info(
+                    f"[TIMELINE] T+{elapsed:.2f}ms: Function '{function_call_data['name']}' complete (took {function_call_time:.2f}ms)"
+                )
 
             return input_messages
 
@@ -647,11 +577,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
             function_exec_start = pendulum.now("UTC")
             function_output = agent_function(**arguments)
             function_exec_end = pendulum.now("UTC")
-            function_exec_time = (function_exec_end - function_exec_start).total_seconds() * 1000
+            function_exec_time = (
+                function_exec_end - function_exec_start
+            ).total_seconds() * 1000
 
             if self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
-                self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Function '{function_call_data['name']}' executed (took {function_exec_time:.2f}ms)")
+                self.logger.info(
+                    f"[TIMELINE] T+{elapsed:.2f}ms: Function '{function_call_data['name']}' executed (took {function_exec_time:.2f}ms)"
+                )
 
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
@@ -852,15 +786,21 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 # Track reasoning events timing
                 if "reasoning" in chunk.type.lower():
                     reasoning_event_time = pendulum.now("UTC")
-                    time_to_reasoning = (reasoning_event_time - stream_start_time).total_seconds() * 1000
+                    time_to_reasoning = (
+                        reasoning_event_time - stream_start_time
+                    ).total_seconds() * 1000
                     if self.logger.isEnabledFor(logging.INFO):
-                        self.logger.info(f"[handle_stream] Reasoning event '{chunk.type}' received at: {time_to_reasoning:.2f}ms")
+                        self.logger.info(
+                            f"[handle_stream] Reasoning event '{chunk.type}' received at: {time_to_reasoning:.2f}ms"
+                        )
 
             # If the model run has just started
             if chunk.type == "response.created":
                 if self.logger.isEnabledFor(logging.INFO):
                     elapsed = self._get_elapsed_time()
-                    self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Stream created, run_id={chunk.response.id}")
+                    self.logger.info(
+                        f"[TIMELINE] T+{elapsed:.2f}ms: Stream created, run_id={chunk.response.id}"
+                    )
                 # Send run_id to queue for client notification
                 if queue:
                     queue.put({"name": "run_id", "value": chunk.response.id})
@@ -941,10 +881,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.completed":
                 # Log when response.completed event is received
                 response_completed_time = pendulum.now("UTC")
-                time_to_completion = (response_completed_time - stream_start_time).total_seconds() * 1000
+                time_to_completion = (
+                    response_completed_time - stream_start_time
+                ).total_seconds() * 1000
                 if self.logger.isEnabledFor(logging.INFO):
                     elapsed = self._get_elapsed_time()
-                    self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Stream completed, run_id={chunk.response.id} (took {time_to_completion:.2f}ms from stream start)")
+                    self.logger.info(
+                        f"[TIMELINE] T+{elapsed:.2f}ms: Stream completed, run_id={chunk.response.id} (took {time_to_completion:.2f}ms from stream start)"
+                    )
 
                 # Process any final output objects in chunk.response
                 if hasattr(chunk.response, "output") and chunk.response.output:
@@ -981,10 +925,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                         # Log time before recursive ask_model call after function execution
                         recursive_call_start = pendulum.now("UTC")
-                        time_from_stream_start = (recursive_call_start - stream_start_time).total_seconds() * 1000
+                        time_from_stream_start = (
+                            recursive_call_start - stream_start_time
+                        ).total_seconds() * 1000
                         if self.logger.isEnabledFor(logging.INFO):
                             elapsed = self._get_elapsed_time()
-                            self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Starting recursive ask_model ({time_from_stream_start:.2f}ms after stream start)")
+                            self.logger.info(
+                                f"[TIMELINE] T+{elapsed:.2f}ms: Starting recursive ask_model ({time_from_stream_start:.2f}ms after stream start)"
+                            )
 
                         self.ask_model(
                             input_messages, queue=queue, stream_event=stream_event
@@ -1068,10 +1016,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         # Log post-processing time
         post_processing_end = pendulum.now("UTC")
-        post_processing_time = (post_processing_end - post_processing_start).total_seconds() * 1000
+        post_processing_time = (
+            post_processing_end - post_processing_start
+        ).total_seconds() * 1000
         if self.logger.isEnabledFor(logging.INFO):
             elapsed = self._get_elapsed_time()
-            self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Post-processing complete (took {post_processing_time:.2f}ms)")
+            self.logger.info(
+                f"[TIMELINE] T+{elapsed:.2f}ms: Post-processing complete (took {post_processing_time:.2f}ms)"
+            )
 
     def get_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
