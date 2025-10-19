@@ -97,7 +97,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         )
 
         # Enable/disable timeline logging (default: enabled for backward compatibility)
-        self.enable_timeline_log = setting.get("enable_timeline_log", True)
+        self.enable_timeline_log = setting.get("enable_timeline_log", False)
 
     def _check_retry_limit(self, retry_count: int) -> None:
         """
@@ -826,7 +826,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     time_to_first_chunk = (
                         first_chunk_time - stream_start_time
                     ).total_seconds() * 1000
-                    if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
+                    if self.enable_timeline_log and self.logger.isEnabledFor(
+                        logging.INFO
+                    ):
                         elapsed = self._get_elapsed_time()
                         self.logger.info(
                             f"[TIMELINE] T+{elapsed:.2f}ms: First response chunk (took {time_to_first_chunk:.2f}ms from stream start)"
@@ -930,7 +932,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         time_from_stream_start = (
                             recursive_call_start - stream_start_time
                         ).total_seconds() * 1000
-                        if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
+                        if self.enable_timeline_log and self.logger.isEnabledFor(
+                            logging.INFO
+                        ):
                             elapsed = self._get_elapsed_time()
                             self.logger.info(
                                 f"[TIMELINE] T+{elapsed:.2f}ms: Starting recursive ask_model ({time_from_stream_start:.2f}ms after stream start)"
