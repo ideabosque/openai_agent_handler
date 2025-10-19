@@ -8,7 +8,6 @@ import base64
 import logging
 import threading
 import traceback
-import uuid
 from decimal import Decimal
 from io import BytesIO
 from queue import Queue
