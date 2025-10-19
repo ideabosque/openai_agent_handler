@@ -66,7 +66,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             timeout=httpx.Timeout(
                 120.0, connect=10.0
             ),  # 10s connect, 120s total timeout
-            http2=True,  # Enable HTTP/2 for better performance
+            http2=False,  # Enable HTTP/2 for better performance
         )
 
         self.client = openai.OpenAI(
