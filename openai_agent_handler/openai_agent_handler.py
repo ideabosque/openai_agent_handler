@@ -65,7 +65,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             timeout=httpx.Timeout(
                 120.0, connect=10.0
             ),  # 10s connect, 120s total timeout
-            http2=False,  # Enable HTTP/2 for better performance
+            http2=True,  # Enable HTTP/2 for better performance
         )
 
         self.client = openai.OpenAI(
@@ -95,6 +95,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             .get("format", {"type": "text"})
             .get("type", "text")
         )
+
+        # Enable/disable timeline logging (default: enabled for backward compatibility)
+        self.enable_timeline_log = setting.get("enable_timeline_log", True)
 
     def _check_retry_limit(self, retry_count: int) -> None:
         """
@@ -144,7 +147,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         Should be called at the start of each new user interaction/run.
         """
         self._global_start_time = None
-        if self.logger.isEnabledFor(logging.INFO):
+        if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
             self.logger.info(f"[TIMELINE] Timeline reset for new run")
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
@@ -163,7 +166,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             invoke_end = pendulum.now("UTC")
             invoke_time = (invoke_end - invoke_start).total_seconds() * 1000
-            if self.logger.isEnabledFor(logging.INFO):
+            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: API call returned (took {invoke_time:.2f}ms)"
@@ -208,12 +211,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
         # Recursive calls will use the same start time for the entire run timeline
         if is_top_level:
             self._global_start_time = ask_model_start
-            if self.logger.isEnabledFor(logging.INFO):
+            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 self.logger.info(
                     f"[TIMELINE] T+0ms: Run started - First ask_model call"
                 )
         else:
-            if self.logger.isEnabledFor(logging.INFO):
+            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: Recursive ask_model call started"
@@ -246,7 +249,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             preparation_time = (
                 preparation_end - ask_model_start
             ).total_seconds() * 1000
-            if self.logger.isEnabledFor(logging.INFO):
+            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
@@ -286,7 +289,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             # Reset timeline when returning to depth 0 (top-level call complete)
             if self._ask_model_depth == 0:
-                if self.logger.isEnabledFor(logging.INFO):
+                if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                     elapsed = self._get_elapsed_time()
                     self.logger.info(
                         f"[TIMELINE] T+{elapsed:.2f}ms: Run complete - Resetting timeline"
@@ -484,7 +487,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             function_call_time = (
                 function_call_end - function_call_start
             ).total_seconds() * 1000
-            if self.logger.isEnabledFor(logging.INFO):
+            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: Function '{function_call_data['name']}' complete (took {function_call_time:.2f}ms)"
@@ -580,7 +583,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 function_exec_end - function_exec_start
             ).total_seconds() * 1000
 
-            if self.logger.isEnabledFor(logging.INFO):
+            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: Function '{function_call_data['name']}' executed (took {function_exec_time:.2f}ms)"
@@ -795,7 +798,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             # If the model run has just started
             if chunk.type == "response.created":
-                if self.logger.isEnabledFor(logging.INFO):
+                if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                     elapsed = self._get_elapsed_time()
                     self.logger.info(
                         f"[TIMELINE] T+{elapsed:.2f}ms: Stream created, run_id={chunk.response.id}"
@@ -823,7 +826,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     time_to_first_chunk = (
                         first_chunk_time - stream_start_time
                     ).total_seconds() * 1000
-                    if self.logger.isEnabledFor(logging.INFO):
+                    if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                         elapsed = self._get_elapsed_time()
                         self.logger.info(
                             f"[TIMELINE] T+{elapsed:.2f}ms: First response chunk (took {time_to_first_chunk:.2f}ms from stream start)"
@@ -883,7 +886,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 time_to_completion = (
                     response_completed_time - stream_start_time
                 ).total_seconds() * 1000
-                if self.logger.isEnabledFor(logging.INFO):
+                if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                     elapsed = self._get_elapsed_time()
                     self.logger.info(
                         f"[TIMELINE] T+{elapsed:.2f}ms: Stream completed, run_id={chunk.response.id} (took {time_to_completion:.2f}ms from stream start)"
@@ -927,7 +930,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         time_from_stream_start = (
                             recursive_call_start - stream_start_time
                         ).total_seconds() * 1000
-                        if self.logger.isEnabledFor(logging.INFO):
+                        if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                             elapsed = self._get_elapsed_time()
                             self.logger.info(
                                 f"[TIMELINE] T+{elapsed:.2f}ms: Starting recursive ask_model ({time_from_stream_start:.2f}ms after stream start)"
@@ -974,7 +977,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             time_to_last_chunk = (
                 last_chunk_time - stream_start_time
             ).total_seconds() * 1000
-            if self.logger.isEnabledFor(logging.INFO):
+            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: Last response chunk (took {time_to_last_chunk:.2f}ms from stream start)"
@@ -1018,7 +1021,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         post_processing_time = (
             post_processing_end - post_processing_start
         ).total_seconds() * 1000
-        if self.logger.isEnabledFor(logging.INFO):
+        if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
             elapsed = self._get_elapsed_time()
             self.logger.info(
                 f"[TIMELINE] T+{elapsed:.2f}ms: Post-processing complete (took {post_processing_time:.2f}ms)"
