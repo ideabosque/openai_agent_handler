@@ -669,6 +669,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "id": output.id,
                     "summary": output.summary,
                 }
+
+                self.final_output["reasoning_summary"] = "\n".join(
+                    [summary.text for summary in output.summary]
+                )
                 continue
 
             # Handle function_call - add reasoning if exists, then process
@@ -774,9 +778,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         output_format = self.output_format_type
         index = 0
 
-        # Track timing for first and last chunks
-        first_chunk_time = None
-        last_chunk_time = None
         stream_start_time = pendulum.now("UTC")
 
         for chunk in response_stream:
@@ -787,14 +788,40 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                 # Track reasoning events timing
                 if "reasoning" in chunk.type.lower():
-                    reasoning_event_time = pendulum.now("UTC")
-                    time_to_reasoning = (
-                        reasoning_event_time - stream_start_time
-                    ).total_seconds() * 1000
-                    if self.logger.isEnabledFor(logging.INFO):
-                        self.logger.info(
-                            f"[handle_stream] Reasoning event '{chunk.type}' received at: {time_to_reasoning:.2f}ms"
-                        )
+                    # reasoning_event_time = pendulum.now("UTC")
+                    # time_to_reasoning = (
+                    #     reasoning_event_time - stream_start_time
+                    # ).total_seconds() * 1000
+                    # if self.logger.isEnabledFor(logging.INFO):
+                    #     self.logger.info(
+                    #         f"[handle_stream] Reasoning event '{chunk.type}' received at: {time_to_reasoning:.2f}ms"
+                    #     )
+                    if chunk.type == "response.reasoning_summary_part.added":
+                        if self.enable_timeline_log and self.logger.isEnabledFor(
+                            logging.INFO
+                        ):
+                            elapsed = self._get_elapsed_time()
+                            self.logger.info(
+                                f"[TIMELINE] T+{elapsed:.2f}ms: Reasoning added"
+                            )
+                    elif chunk.type == "response.reasoning_summary_text.delta":
+                        print(chunk.delta, end="", flush=True)
+                    elif chunk.type == "response.reasoning_summary_text.done":
+                        if self.enable_timeline_log and self.logger.isEnabledFor(
+                            logging.INFO
+                        ):
+                            elapsed = self._get_elapsed_time()
+                            self.logger.info(
+                                f"[TIMELINE] T+{elapsed:.2f}ms: Reasoning summary text done"
+                            )
+                    elif chunk.type == "response.reasoning_summary_part.done":
+                        if self.enable_timeline_log and self.logger.isEnabledFor(
+                            logging.INFO
+                        ):
+                            elapsed = self._get_elapsed_time()
+                            self.logger.info(
+                                f"[TIMELINE] T+{elapsed:.2f}ms: Reasoning done"
+                            )
 
             # If the model run has just started
             if chunk.type == "response.created":
@@ -808,7 +835,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     queue.put({"name": "run_id", "value": chunk.response.id})
 
             elif chunk.type == "response.output_item.added":
-                pass
+                if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
+                    elapsed = self._get_elapsed_time()
+                    self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Output item added")
             elif chunk.type == "response.content_part.added":
                 # Send initial message start signal to WebSocket server
                 self.send_data_to_stream(
@@ -819,23 +848,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             # If we received partial text data
             elif chunk.type == "response.output_text.delta":
                 received_any_content = True
-
-                # Track first chunk timing
-                if first_chunk_time is None:
-                    first_chunk_time = pendulum.now("UTC")
-                    time_to_first_chunk = (
-                        first_chunk_time - stream_start_time
-                    ).total_seconds() * 1000
-                    if self.enable_timeline_log and self.logger.isEnabledFor(
-                        logging.INFO
-                    ):
-                        elapsed = self._get_elapsed_time()
-                        self.logger.info(
-                            f"[TIMELINE] T+{elapsed:.2f}ms: First response chunk (took {time_to_first_chunk:.2f}ms from stream start)"
-                        )
-
-                # Update last chunk time for each chunk received
-                last_chunk_time = pendulum.now("UTC")
 
                 print(chunk.delta, end="", flush=True)
 
@@ -881,7 +893,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     is_message_end=True,
                 )
             elif chunk.type == "response.output_item.done":
-                pass
+                if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
+                    elapsed = self._get_elapsed_time()
+                    self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Output item done")
             elif chunk.type == "response.completed":
                 # Log when response.completed event is received
                 response_completed_time = pendulum.now("UTC")
@@ -911,6 +925,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                     "id": output.id,
                                     "summary": output.summary,
                                 }
+
+                                self.final_output["reasoning_summary"] = "\n".join(
+                                    [summary.text for summary in output.summary]
+                                )
                                 continue
 
                             # Handle function_call - add reasoning if exists, then process
@@ -976,42 +994,34 @@ class OpenAIEventHandler(AIAgentEventHandler):
         # Build final accumulated text from parts (performance optimization)
         final_accumulated_text = "".join(accumulated_text_parts)
 
-        # Log timing for last chunk
-        if last_chunk_time is not None:
-            time_to_last_chunk = (
-                last_chunk_time - stream_start_time
-            ).total_seconds() * 1000
-            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                elapsed = self._get_elapsed_time()
-                self.logger.info(
-                    f"[TIMELINE] T+{elapsed:.2f}ms: Last response chunk (took {time_to_last_chunk:.2f}ms from stream start)"
-                )
-
         # Scenario 2: Empty stream - retry (performance optimization)
-        if not received_any_content:
-            if self.logger.isEnabledFor(logging.WARNING):
-                self.logger.warning(
-                    f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
-                )
-            next_response = self.invoke_model(
-                **{"input": input_messages, "stream": True}
-            )
-            self.handle_stream(
-                next_response,
-                input_messages,
-                queue=queue,
-                stream_event=stream_event,
-                retry_count=retry_count + 1,
-            )
-            return
+        # if not received_any_content:
+        #     if self.logger.isEnabledFor(logging.WARNING):
+        #         self.logger.warning(
+        #             f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
+        #         )
+        #     next_response = self.invoke_model(
+        #         **{"input": input_messages, "stream": True}
+        #     )
+        #     self.handle_stream(
+        #         next_response,
+        #         input_messages,
+        #         queue=queue,
+        #         stream_event=stream_event,
+        #         retry_count=retry_count + 1,
+        #     )
+        #     return
 
         # Scenario 3: Valid stream - set final output
-        self.final_output = {
-            "message_id": message_id,
-            "role": role,
-            "content": final_accumulated_text,
-            "output_files": output_files,
-        }
+        self.final_output = dict(
+            self.final_output,
+            **{
+                "message_id": message_id,
+                "role": role,
+                "content": final_accumulated_text,
+                "output_files": output_files,
+            },
+        )
 
         # Store accumulated_text for backward compatibility
         self.accumulated_text = final_accumulated_text
@@ -1032,7 +1042,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             )
 
     def get_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
-
         file = self.client.files.retrieve(kwargs["file_id"])
         uploaded_file = {
             "id": file.id,
