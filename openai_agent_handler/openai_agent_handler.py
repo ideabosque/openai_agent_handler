@@ -768,6 +768,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         message_id = None
         role = None
+        accumulated_partial_reasoning_text = ""
         # Use list for efficient string concatenation (performance optimization)
         accumulated_text_parts = []
         output_files = []
@@ -798,6 +799,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         )
 
                     if chunk.type == "response.reasoning_summary_part.added":
+                        # Send initial message start signal to WebSocket server
+                        self.send_data_to_stream(
+                            index=index,
+                            data_format=output_format,
+                            chunk_delta="<Reasoning>",
+                        )
+                        index += 1
+
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
                         ):
@@ -807,15 +816,36 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             )
                     elif chunk.type == "response.reasoning_summary_text.delta":
                         print(chunk.delta, end="", flush=True)
-                    elif chunk.type == "response.reasoning_summary_text.done":
-                        if self.enable_timeline_log and self.logger.isEnabledFor(
-                            logging.INFO
-                        ):
-                            elapsed = self._get_elapsed_time()
-                            self.logger.info(
-                                f"[TIMELINE] T+{elapsed:.2f}ms: Reasoning summary text done"
+
+                        accumulated_partial_reasoning_text += chunk.delta
+                        # Check if text contains XML-style tags and update format
+                        index, accumulated_partial_reasoning_text = (
+                            self.process_text_content(
+                                index, accumulated_partial_reasoning_text, output_format
                             )
+                        )
+
+                    elif chunk.type == "response.reasoning_summary_text.done":
+                        chunk_delta = "<Reasoning/>"
+                        if len(accumulated_partial_reasoning_text) > 0:
+                            chunk_delta = (
+                                f"{accumulated_partial_reasoning_text}{chunk_delta}"
+                            )
+                        self.send_data_to_stream(
+                            index=index,
+                            data_format=output_format,
+                            chunk_delta=chunk_delta,
+                        )
+                        accumulated_partial_reasoning_text = ""
+                        index += 1
                     elif chunk.type == "response.reasoning_summary_part.done":
+                        # Send message completion signal to WebSocket server
+                        self.send_data_to_stream(
+                            index=index,
+                            data_format=output_format,
+                            is_message_end=True,
+                        )
+
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
                         ):
@@ -927,9 +957,20 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                     "summary": output.summary,
                                 }
 
-                                self.final_output["reasoning_summary"] = "\n".join(
+                                reasoning_summary = "\n".join(
                                     [summary.text for summary in output.summary]
                                 )
+
+                                if self.final_output.get("reasoning_summary"):
+                                    self.final_output["reasoning_summary"] = (
+                                        self.final_output["reasoning_summary"]
+                                        + "\n"
+                                        + reasoning_summary
+                                    )
+                                else:
+                                    self.final_output["reasoning_summary"] = (
+                                        reasoning_summary
+                                    )
                                 continue
 
                             # Handle function_call - add reasoning if exists, then process
