@@ -788,14 +788,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                 # Track reasoning events timing
                 if "reasoning" in chunk.type.lower():
-                    # reasoning_event_time = pendulum.now("UTC")
-                    # time_to_reasoning = (
-                    #     reasoning_event_time - stream_start_time
-                    # ).total_seconds() * 1000
-                    # if self.logger.isEnabledFor(logging.INFO):
-                    #     self.logger.info(
-                    #         f"[handle_stream] Reasoning event '{chunk.type}' received at: {time_to_reasoning:.2f}ms"
-                    #     )
+                    if self.logger.isEnabledFor(logging.DEBUG):
+                        reasoning_event_time = pendulum.now("UTC")
+                        time_to_reasoning = (
+                            reasoning_event_time - stream_start_time
+                        ).total_seconds() * 1000
+                        self.logger.info(
+                            f"[handle_stream] Reasoning event '{chunk.type}' received at: {time_to_reasoning:.2f}ms"
+                        )
+
                     if chunk.type == "response.reasoning_summary_part.added":
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
