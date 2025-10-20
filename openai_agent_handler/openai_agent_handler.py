@@ -109,7 +109,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         Raises:
             Exception: If retry_count exceeds MAX_RETRIES
         """
-        MAX_RETRIES = 5
+        MAX_RETRIES = 3
         if retry_count > MAX_RETRIES:
             error_msg = (
                 f"Maximum retry limit ({MAX_RETRIES}) exceeded for empty responses"
@@ -996,22 +996,22 @@ class OpenAIEventHandler(AIAgentEventHandler):
         final_accumulated_text = "".join(accumulated_text_parts)
 
         # Scenario 2: Empty stream - retry (performance optimization)
-        # if not received_any_content:
-        #     if self.logger.isEnabledFor(logging.WARNING):
-        #         self.logger.warning(
-        #             f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
-        #         )
-        #     next_response = self.invoke_model(
-        #         **{"input": input_messages, "stream": True}
-        #     )
-        #     self.handle_stream(
-        #         next_response,
-        #         input_messages,
-        #         queue=queue,
-        #         stream_event=stream_event,
-        #         retry_count=retry_count + 1,
-        #     )
-        #     return
+        if not received_any_content:
+            if self.logger.isEnabledFor(logging.WARNING):
+                self.logger.warning(
+                    f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
+                )
+            next_response = self.invoke_model(
+                **{"input": input_messages, "stream": True}
+            )
+            self.handle_stream(
+                next_response,
+                input_messages,
+                queue=queue,
+                stream_event=stream_event,
+                retry_count=retry_count + 1,
+            )
+            return
 
         # Scenario 3: Valid stream - set final output
         self.final_output = dict(
