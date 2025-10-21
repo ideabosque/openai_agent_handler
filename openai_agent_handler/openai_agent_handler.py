@@ -774,6 +774,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         received_any_content = False
         # Use cached output format type (performance optimization)
         output_format = self.output_format_type
+        reasoning_no = 0
+        reasoning_index = 0
         index = 0
 
         stream_start_time = pendulum.now("UTC")
@@ -803,14 +805,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                     if chunk.type == "response.reasoning_summary_part.added":
                         # Send initial message start signal to WebSocket server
-                        if index != 0:
-                            index = 0
+                        if reasoning_index != 0:
+                            reasoning_index = 0
                         self.send_data_to_stream(
-                            index=index,
+                            index=reasoning_index,
                             data_format=output_format,
-                            chunk_delta="<Reasoning>",
+                            chunk_delta=f"<Reasoning_start Id={reasoning_no}/>",
                         )
-                        index += 1
+                        reasoning_no += 1
+                        reasoning_index += 1
 
                         if self.logger.isEnabledFor(logging.DEBUG):
                             elapsed = self._get_elapsed_time()
@@ -822,30 +825,30 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                         accumulated_partial_reasoning_text += chunk.delta
                         # Check if text contains XML-style tags and update format
-                        index, accumulated_partial_reasoning_text = (
+                        reasoning_index, accumulated_partial_reasoning_text = (
                             self.process_text_content(
-                                index, accumulated_partial_reasoning_text, output_format
+                                reasoning_index,
+                                accumulated_partial_reasoning_text,
+                                output_format,
                             )
                         )
 
                     elif chunk.type == "response.reasoning_summary_text.done":
-                        chunk_delta = "<Reasoning/>"
+                        # Send message completion signal to WebSocket server
                         if len(accumulated_partial_reasoning_text) > 0:
-                            chunk_delta = (
-                                f"{accumulated_partial_reasoning_text}{chunk_delta}"
+                            self.send_data_to_stream(
+                                index=index,
+                                data_format=output_format,
+                                chunk_delta=accumulated_partial_reasoning_text,
                             )
-                        self.send_data_to_stream(
-                            index=index,
-                            data_format=output_format,
-                            chunk_delta=chunk_delta,
-                        )
-                        accumulated_partial_reasoning_text = ""
-                        index += 1
+                            accumulated_partial_reasoning_text = ""
+                            reasoning_index += 1
                     elif chunk.type == "response.reasoning_summary_part.done":
                         # Send message completion signal to WebSocket server
                         self.send_data_to_stream(
-                            index=index,
+                            index=reasoning_index,
                             data_format=output_format,
+                            chunk_delta=f"<Reasoning_end Id={reasoning_no}/>",
                             is_message_end=True,
                         )
 
@@ -874,8 +877,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     )
             elif chunk.type == "response.content_part.added":
                 # Send initial message start signal to WebSocket server
-                if index != 0:
-                    index == 0
                 self.send_data_to_stream(
                     index=index,
                     data_format=output_format,
