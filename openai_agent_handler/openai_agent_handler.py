@@ -840,13 +840,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         accumulated_partial_reasoning_text = ""
                         index += 1
                     elif chunk.type == "response.reasoning_summary_part.done":
-                        # Send message completion signal to WebSocket server
-                        self.send_data_to_stream(
-                            index=index,
-                            data_format=output_format,
-                            is_message_end=True,
-                        )
-
                         if self.logger.isEnabledFor(logging.DEBUG):
                             elapsed = self._get_elapsed_time()
                             self.logger.debug(
