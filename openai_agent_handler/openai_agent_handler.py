@@ -96,6 +96,21 @@ class OpenAIEventHandler(AIAgentEventHandler):
             .get("type", "text")
         )
 
+        # Validate reasoning configuration if present
+        if "reasoning" in self.model_setting:
+            if not isinstance(self.model_setting["reasoning"], dict):
+                if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                    self.logger.warning(
+                        "Reasoning configuration should be a dictionary. "
+                        "Reasoning features may not work correctly."
+                    )
+            elif self.model_setting["reasoning"].get("summary") is None:
+                if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                    self.logger.warning(
+                        "Reasoning summary is not enabled in configuration. "
+                        "Reasoning events will be skipped during streaming."
+                    )
+
     def _check_retry_limit(self, retry_count: int) -> None:
         """
         Check if retry limit has been exceeded and raise exception if so.
@@ -667,9 +682,16 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "summary": output.summary,
                 }
 
-                self.final_output["reasoning_summary"] = "\n".join(
-                    [summary.text for summary in output.summary]
-                )
+                try:
+                    self.final_output["reasoning_summary"] = "\n".join(
+                        [summary.text for summary in output.summary]
+                    )
+                except Exception as e:
+                    if self.logger.isEnabledFor(logging.ERROR):
+                        self.logger.error(f"Failed to process reasoning summary: {e}")
+                    self.final_output["reasoning_summary"] = (
+                        "Error processing reasoning summary"
+                    )
                 continue
 
             # Handle function_call - add reasoning if exists, then process
@@ -685,7 +707,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.ask_model(input_messages)
                 return
 
-            # For all other types, reset reasoning and process normally
+            # For all other types, add reasoning if exists then reset
+            if reasoning_item is not None:
+                input_messages.append(reasoning_item)
             reasoning_item = None
 
             if output.type == "message" and output.status == "completed":
@@ -774,6 +798,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
         received_any_content = False
         # Use cached output format type (performance optimization)
         output_format = self.output_format_type
+
+        # Index variables for tracking stream positions:
+        # - reasoning_no: Unique ID for each complete reasoning block (increments after reasoning_summary_part.done)
+        # - reasoning_index: Chunk position within the current reasoning block (resets at reasoning_summary_part.added)
+        # - index: Chunk position for regular message content (increments with content_part events)
         reasoning_no = 0
         reasoning_index = 0
         index = 0
@@ -963,20 +992,33 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                     "summary": output.summary,
                                 }
 
-                                reasoning_summary = "\n".join(
-                                    [summary.text for summary in output.summary]
-                                )
+                                try:
+                                    reasoning_summary = "\n".join(
+                                        [summary.text for summary in output.summary]
+                                    )
 
-                                if self.final_output.get("reasoning_summary"):
-                                    self.final_output["reasoning_summary"] = (
-                                        self.final_output["reasoning_summary"]
-                                        + "\n"
-                                        + reasoning_summary
-                                    )
-                                else:
-                                    self.final_output["reasoning_summary"] = (
-                                        reasoning_summary
-                                    )
+                                    # Accumulate reasoning summaries from multiple function call rounds
+                                    # Note: Individual reasoning chunks are already sent via send_data_to_stream
+                                    # This accumulation is for the final_output record and function call context
+                                    if self.final_output.get("reasoning_summary"):
+                                        self.final_output["reasoning_summary"] = (
+                                            self.final_output["reasoning_summary"]
+                                            + "\n"
+                                            + reasoning_summary
+                                        )
+                                    else:
+                                        self.final_output["reasoning_summary"] = (
+                                            reasoning_summary
+                                        )
+                                except Exception as e:
+                                    if self.logger.isEnabledFor(logging.ERROR):
+                                        self.logger.error(
+                                            f"Failed to process reasoning summary in stream: {e}"
+                                        )
+                                    if not self.final_output.get("reasoning_summary"):
+                                        self.final_output["reasoning_summary"] = (
+                                            "Error processing reasoning summary"
+                                        )
                                 continue
 
                             # Handle function_call - add reasoning if exists, then process
