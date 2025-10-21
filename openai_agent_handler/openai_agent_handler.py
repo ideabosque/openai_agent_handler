@@ -17,7 +17,6 @@ import httpx
 import openai
 import pendulum
 import requests
-from httpx import Response
 
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Utility
@@ -160,7 +159,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         self._global_start_time = None
         if self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.debug(f"[TIMELINE] Timeline reset for new run")
+            self.logger.debug("[TIMELINE] Timeline reset for new run")
 
     def invoke_model(self, **kwargs: Dict[str, Any]) -> Any:
         """
@@ -196,7 +195,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         input_messages: List[Dict[str, Any]],
         queue: Queue = None,
         stream_event: threading.Event = None,
-        input_files: List[str, Any] = [],
+        input_files: List[str] = [],
         model_setting: Dict[str, Any] = None,
     ) -> Optional[str]:
         """
@@ -225,7 +224,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self._global_start_time = ask_model_start
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
-                    f"[TIMELINE] T+0ms: Run started - First ask_model call"
+                    "[TIMELINE] T+0ms: Run started - First ask_model call"
                 )
         else:
             if self.logger.isEnabledFor(logging.DEBUG):
@@ -409,7 +408,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         self,
         tool_call: Any,
         input_messages: List[Dict[str, Any]],
-    ) -> None:
+    ) -> List[Dict[str, Any]]:
         """
         Processes function calls from the model including validation, execution and history updates.
 
@@ -1139,8 +1138,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             "created_at": pendulum.from_timestamp(file.created_at, tz="UTC"),
             "bytes": file.bytes,
         }
-        if "encoded_content" in kwargs and kwargs["encoded_content"] == True:
-            response: Response = self.client.files.content(kwargs["file_id"])
+        if "encoded_content" in kwargs and kwargs["encoded_content"]:
+            response = self.client.files.content(kwargs["file_id"])
             content = response.content  # Get the actual bytes data)
             # Convert the content to a Base64-encoded string
             uploaded_file["encoded_content"] = base64.b64encode(content).decode("utf-8")
@@ -1193,7 +1192,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             "bytes": file.bytes,
         }
 
-    def delete_file(self, **kwargs: Dict[str, Any]) -> None:
+    def delete_file(self, **kwargs: Dict[str, Any]) -> bool:
         result = self.client.files.delete(kwargs["file_id"])
         return result.deleted
 
@@ -1223,7 +1222,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         }
 
         # Get file content if requested
-        if "encoded_content" in kwargs and kwargs["encoded_content"] == True:
+        if "encoded_content" in kwargs and kwargs["encoded_content"]:
             content_url = f"{metadata_url}/content"
             content_response = requests.get(content_url, headers=headers)
             content_response.raise_for_status()
