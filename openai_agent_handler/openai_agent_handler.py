@@ -785,9 +785,13 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     self.logger.debug(f"Chunk attributes: {vars(chunk)}")
 
                 # Track reasoning events timing
-                if "reasoning" in chunk.type.lower() and self.model_setting.get(
-                    "reasoning", {}
-                ).get("summary"):
+                if "reasoning" in chunk.type.lower():
+                    if self.model_setting.get("reasoning", {}).get("summary") is None:
+                        self.logger.warning(
+                            "Reasoning summary is not enabled, skipping reasoning events"
+                        )
+                        continue
+
                     if self.logger.isEnabledFor(logging.DEBUG):
                         reasoning_event_time = pendulum.now("UTC")
                         time_to_reasoning = (
