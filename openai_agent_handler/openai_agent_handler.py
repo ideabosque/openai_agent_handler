@@ -803,6 +803,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                     if chunk.type == "response.reasoning_summary_part.added":
                         # Send initial message start signal to WebSocket server
+                        if index != 0:
+                            index = 0
                         self.send_data_to_stream(
                             index=index,
                             data_format=output_format,
@@ -872,6 +874,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     )
             elif chunk.type == "response.content_part.added":
                 # Send initial message start signal to WebSocket server
+                if index != 0:
+                    index == 0
                 self.send_data_to_stream(
                     index=index,
                     data_format=output_format,
