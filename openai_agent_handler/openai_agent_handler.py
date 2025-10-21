@@ -837,7 +837,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         # Send message completion signal to WebSocket server
                         if len(accumulated_partial_reasoning_text) > 0:
                             self.send_data_to_stream(
-                                index=index,
+                                index=reasoning_index,
                                 data_format=output_format,
                                 chunk_delta=accumulated_partial_reasoning_text,
                             )
