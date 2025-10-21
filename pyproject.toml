@@ -23,6 +23,7 @@ dependencies = [
     "SilvaEngine-Utility",
     "AI-Agent-Handler",
     "openai",
+    "tiktoken"
 ]
 
 [tool.setuptools]
@@ -38,3 +39,5 @@ exclude = []
 typeCheckingMode = "basic"
 reportCallIssue = "none"
 reportArgumentType = "none"
+reportOperatorIssue = "none"
+reportAttributeAccessIssue = "none"
