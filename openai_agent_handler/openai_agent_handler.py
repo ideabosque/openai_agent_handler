@@ -111,7 +111,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     )
 
         # Enable/disable timeline logging (default: enabled for backward compatibility)
-        self.enable_timeline_log = setting.get("enable_timeline_log", True)
+        self.enable_timeline_log = setting.get("enable_timeline_log", False)
 
     def _check_retry_limit(self, retry_count: int) -> None:
         """
