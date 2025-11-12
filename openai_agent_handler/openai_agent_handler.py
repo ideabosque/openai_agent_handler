@@ -225,6 +225,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
         # Recursive calls will use the same start time for the entire run timeline
         if is_top_level:
             self._global_start_time = ask_model_start
+
+            # Reset reasoning_summary for new conversation turn
+            # Recursive calls (function call loops) will continue accumulating
+            if "reasoning_summary" in self.final_output:
+                del self.final_output["reasoning_summary"]
+
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 self.logger.info("[TIMELINE] T+0ms: Run started - First ask_model call")
         else:
@@ -757,12 +763,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return
 
         # Scenario 3: Valid response - set final output
-        self.final_output = {
-            "message_id": message_id,
-            "role": role,
-            "content": content,
-            "output_files": output_files,
-        }
+        self.final_output.update(
+            {
+                "message_id": message_id,
+                "role": role,
+                "content": content,
+                "output_files": output_files,
+            }
+        )
 
     def handle_stream(
         self,
@@ -790,6 +798,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         message_id = None
         role = None
         accumulated_partial_reasoning_text = ""
+        # Accumulate complete reasoning for the current block
+        accumulated_reasoning_block = []
         # Use list for efficient string concatenation (performance optimization)
         accumulated_text_parts = []
         output_files = []
@@ -833,6 +843,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         )
 
                     if chunk.type == "response.reasoning_summary_part.added":
+                        # Reset accumulated reasoning for new block
+                        accumulated_reasoning_block = []
+
                         # Send initial message start signal to WebSocket server
                         if reasoning_index != 0:
                             reasoning_index = 0
@@ -853,6 +866,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             )
                     elif chunk.type == "response.reasoning_summary_text.delta":
                         print(chunk.delta, end="", flush=True)
+
+                        # Accumulate for final summary
+                        accumulated_reasoning_block.append(chunk.delta)
 
                         accumulated_partial_reasoning_text += chunk.delta
                         # Check if text contains XML-style tags and update format
@@ -877,6 +893,30 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             accumulated_partial_reasoning_text = ""
                             reasoning_index += 1
                     elif chunk.type == "response.reasoning_summary_part.done":
+                        # Save accumulated reasoning text to final_output
+                        # Build the reasoning text from accumulated_reasoning_block list
+                        # which has been collecting text from response.reasoning_summary_text.delta events
+                        if accumulated_reasoning_block:
+                            reasoning_summary = "".join(accumulated_reasoning_block)
+
+                            # Accumulate reasoning summaries from multiple reasoning blocks
+                            if self.final_output.get("reasoning_summary"):
+                                self.final_output["reasoning_summary"] = (
+                                    self.final_output["reasoning_summary"]
+                                    + "\n"
+                                    + reasoning_summary
+                                )
+                            else:
+                                self.final_output["reasoning_summary"] = reasoning_summary
+
+                            if self.logger.isEnabledFor(logging.DEBUG):
+                                self.logger.debug(
+                                    f"Captured reasoning summary: {reasoning_summary[:100]}..."
+                                )
+
+                            # Reset for next reasoning block
+                            accumulated_reasoning_block = []
+
                         # Send message completion signal to WebSocket server
                         self.send_data_to_stream(
                             index=reasoning_index,
@@ -990,41 +1030,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     ):
                         reasoning_item = None
                         for output in chunk.response.output:
-                            # Handle reasoning - store it and continue
+                            # Handle reasoning - store it for function call context
+                            # Note: Reasoning summary is already captured during streaming
+                            # at response.reasoning_summary_part.done event (lines 882-907)
                             if output.type == "reasoning":
                                 reasoning_item = {
                                     "type": "reasoning",
                                     "id": output.id,
                                     "summary": output.summary,
                                 }
-
-                                try:
-                                    reasoning_summary = "\n".join(
-                                        [summary.text for summary in output.summary]
-                                    )
-
-                                    # Accumulate reasoning summaries from multiple function call rounds
-                                    # Note: Individual reasoning chunks are already sent via send_data_to_stream
-                                    # This accumulation is for the final_output record and function call context
-                                    if self.final_output.get("reasoning_summary"):
-                                        self.final_output["reasoning_summary"] = (
-                                            self.final_output["reasoning_summary"]
-                                            + "\n"
-                                            + reasoning_summary
-                                        )
-                                    else:
-                                        self.final_output["reasoning_summary"] = (
-                                            reasoning_summary
-                                        )
-                                except Exception as e:
-                                    if self.logger.isEnabledFor(logging.ERROR):
-                                        self.logger.error(
-                                            f"Failed to process reasoning summary in stream: {e}"
-                                        )
-                                    if not self.final_output.get("reasoning_summary"):
-                                        self.final_output["reasoning_summary"] = (
-                                            "Error processing reasoning summary"
-                                        )
                                 continue
 
                             # Handle function_call - add reasoning if exists, then process
@@ -1109,9 +1123,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return
 
         # Scenario 3: Valid stream - set final output
-        self.final_output = dict(
-            self.final_output,
-            **{
+        self.final_output.update(
+            {
                 "message_id": message_id,
                 "role": role,
                 "content": final_accumulated_text,
