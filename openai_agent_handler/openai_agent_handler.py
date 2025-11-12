@@ -846,9 +846,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         # Reset accumulated reasoning for new block
                         accumulated_reasoning_block = []
 
-                        # Send initial message start signal to WebSocket server
-                        if reasoning_index != 0:
-                            reasoning_index = 0
+                        ## Send initial message start signal to WebSocket server
+                        # if reasoning_index != 0:
+                        #     reasoning_index = 0
                         self.send_data_to_stream(
                             index=reasoning_index,
                             data_format=output_format,
@@ -907,7 +907,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                     + reasoning_summary
                                 )
                             else:
-                                self.final_output["reasoning_summary"] = reasoning_summary
+                                self.final_output["reasoning_summary"] = (
+                                    reasoning_summary
+                                )
 
                             if self.logger.isEnabledFor(logging.DEBUG):
                                 self.logger.debug(
