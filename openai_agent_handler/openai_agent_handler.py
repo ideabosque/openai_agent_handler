@@ -949,6 +949,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     queue.put({"name": "run_id", "value": chunk.response.id})
 
             elif chunk.type == "response.output_item.added":
+                if index == 0 and reasoning_index > 0:
+                    index = reasoning_index
                 if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                     elapsed = self._get_elapsed_time()
                     self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Output item added")
