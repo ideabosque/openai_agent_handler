@@ -17,7 +17,6 @@ import httpx
 import openai
 import pendulum
 import requests
-
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Utility
 
@@ -192,7 +191,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
 
-    @Utility.performance_monitor.monitor_operation(operation_name="OpenAI")
+    # @Utility.performance_monitor.monitor_operation(operation_name="OpenAI")
     def ask_model(
         self,
         input_messages: List[Dict[str, Any]],
