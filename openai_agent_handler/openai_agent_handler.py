@@ -845,16 +845,16 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         # Reset accumulated reasoning for new block
                         accumulated_reasoning_block = []
 
-                        ## Send initial message start signal to WebSocket server
-                        # if reasoning_index != 0:
-                        #     reasoning_index = 0
-                        self.send_data_to_stream(
-                            index=reasoning_index,
-                            data_format=output_format,
-                            chunk_delta=f"<ReasoningStart Id={reasoning_no}/>",
-                            suffix=f"rs#{reasoning_no}",
-                        )
-                        reasoning_index += 1
+                        # ## Send initial message start signal to WebSocket server
+                        # # if reasoning_index != 0:
+                        # #     reasoning_index = 0
+                        # self.send_data_to_stream(
+                        #     index=reasoning_index,
+                        #     data_format=output_format,
+                        #     chunk_delta=f"<ReasoningStart Id={reasoning_no}/>",
+                        #     suffix=f"rs#{reasoning_no}",
+                        # )
+                        # reasoning_index += 1
 
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
@@ -918,14 +918,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             # Reset for next reasoning block
                             accumulated_reasoning_block = []
 
-                        # Send message completion signal to WebSocket server
-                        self.send_data_to_stream(
-                            index=reasoning_index,
-                            data_format=output_format,
-                            chunk_delta=f"<ReasoningEnd Id={reasoning_no}/>",
-                            suffix=f"rs#{reasoning_no}",
-                        )
-                        reasoning_no += 1
+                        # # Send message completion signal to WebSocket server
+                        # self.send_data_to_stream(
+                        #     index=reasoning_index,
+                        #     data_format=output_format,
+                        #     chunk_delta=f"<ReasoningEnd Id={reasoning_no}/>",
+                        #     suffix=f"rs#{reasoning_no}",
+                        # )
+                        # reasoning_no += 1
 
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
