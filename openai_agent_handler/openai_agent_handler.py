@@ -890,7 +890,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                 suffix=f"rs#{reasoning_no}",
                             )
                             accumulated_partial_reasoning_text = ""
-                            reasoning_index += 1
+                            # reasoning_index += 1
                     elif chunk.type == "response.reasoning_summary_part.done":
                         # Save accumulated reasoning text to final_output
                         # Build the reasoning text from accumulated_reasoning_block list
