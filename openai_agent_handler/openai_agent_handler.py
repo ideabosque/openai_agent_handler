@@ -19,7 +19,8 @@ import pendulum
 import requests
 
 from ai_agent_handler import AIAgentEventHandler
-from silvaengine_utility import Utility
+from silvaengine_utility.performance_monitor import performance_monitor
+from silvaengine_utility.serializer import Serializer
 
 
 # ----------------------------
@@ -192,7 +193,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
 
-    @Utility.performance_monitor.monitor_operation(operation_name="OpenAI")
+    @performance_monitor.monitor_operation(operation_name="OpenAI")
     def ask_model(
         self,
         input_messages: List[Dict[str, Any]],
@@ -356,7 +357,17 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         # Upload each file to OpenAI and store metadata
         file_ids = []
+        image_urls = []
         for input_file in input_files:
+            if "encoded_image" in input_file:
+                image_urls.append(
+                    f"data:image/jpeg;base64,{input_file['encoded_image']}"
+                )
+                continue
+            if "image_url" in input_file:
+                image_urls.append(input_file["image_url"])
+                continue
+
             file_data = dict(input_file, purpose="user_data")
             uploaded_file = self.insert_file(**file_data)
             file_ids.append(uploaded_file["id"])
@@ -372,9 +383,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
             message_content = [
                 {"type": "input_text", "text": input_messages[-1]["content"]}
             ]
-            message_content.extend(
-                {"type": "input_file", "file_id": file_id} for file_id in file_ids
-            )
+            if file_ids:
+                message_content.extend(
+                    {"type": "input_file", "file_id": file_id} for file_id in file_ids
+                )
+            if image_urls:
+                message_content.extend(
+                    {"type": "input_image", "image_url": image_url}
+                    for image_url in image_urls
+                )
 
             # Update the last message with combined content
             input_messages[-1]["content"] = message_content
@@ -396,7 +413,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         for message in user_messages:
             try:
                 # Parse message content and extract file IDs
-                message_content = Utility.json_loads(message["content"])
+                message_content = Serializer.json_loads(message["content"])
                 file_ids = [
                     content["file_id"]
                     for content in message_content
@@ -484,7 +501,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     {
                         "message": {
                             "role": self.agent["tool_call_role"],
-                            "content": Utility.json_dumps(
+                            "content": Serializer.json_dumps(
                                 {
                                     "tool": {
                                         "tool_call_id": tool_call.id,
@@ -544,7 +561,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :raises: ValueError if argument parsing fails.
         """
         try:
-            arguments = Utility.json_loads(function_call_data.get("arguments", "{}"))
+            arguments = Serializer.json_loads(function_call_data.get("arguments", "{}"))
 
             return arguments
 
@@ -582,7 +599,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         try:
             # Cache JSON serialization to avoid duplicate work (performance optimization)
-            arguments_json = Utility.json_dumps(arguments)
+            arguments_json = Serializer.json_dumps(arguments)
 
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
@@ -611,7 +628,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
-                    "content": Utility.json_dumps(function_output),
+                    "content": Serializer.json_dumps(function_output),
                     "status": "completed",
                 },
             )
@@ -649,7 +666,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             {
                 "type": "function_call_output",
                 "call_id": function_call_data["call_id"],
-                "output": Utility.json_dumps(function_output),
+                "output": Serializer.json_dumps(function_output),
             }
         )
 
