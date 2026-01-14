@@ -17,7 +17,6 @@ import httpx
 import openai
 import pendulum
 import requests
-
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility.performance_monitor import performance_monitor
 from silvaengine_utility.serializer import Serializer
@@ -193,7 +192,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
 
-    @performance_monitor.monitor_operation(operation_name="OpenAI")
+    # @Utility.performance_monitor.monitor_operation(operation_name="OpenAI")
     def ask_model(
         self,
         input_messages: List[Dict[str, Any]],
@@ -863,16 +862,16 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         # Reset accumulated reasoning for new block
                         accumulated_reasoning_block = []
 
-                        ## Send initial message start signal to WebSocket server
-                        # if reasoning_index != 0:
-                        #     reasoning_index = 0
-                        self.send_data_to_stream(
-                            index=reasoning_index,
-                            data_format=output_format,
-                            chunk_delta=f"<ReasoningStart Id={reasoning_no}/>",
-                            suffix=f"rs#{reasoning_no}",
-                        )
-                        reasoning_index += 1
+                        # ## Send initial message start signal to WebSocket server
+                        # # if reasoning_index != 0:
+                        # #     reasoning_index = 0
+                        # self.send_data_to_stream(
+                        #     index=reasoning_index,
+                        #     data_format=output_format,
+                        #     chunk_delta=f"<ReasoningStart Id={reasoning_no}/>",
+                        #     suffix=f"rs#{reasoning_no}",
+                        # )
+                        # reasoning_index += 1
 
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
@@ -908,7 +907,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                 suffix=f"rs#{reasoning_no}",
                             )
                             accumulated_partial_reasoning_text = ""
-                            reasoning_index += 1
+                            # reasoning_index += 1
                     elif chunk.type == "response.reasoning_summary_part.done":
                         # Save accumulated reasoning text to final_output
                         # Build the reasoning text from accumulated_reasoning_block list
@@ -936,14 +935,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             # Reset for next reasoning block
                             accumulated_reasoning_block = []
 
-                        # Send message completion signal to WebSocket server
-                        self.send_data_to_stream(
-                            index=reasoning_index,
-                            data_format=output_format,
-                            chunk_delta=f"<ReasoningEnd Id={reasoning_no}/>",
-                            suffix=f"rs#{reasoning_no}",
-                        )
-                        reasoning_no += 1
+                        # # Send message completion signal to WebSocket server
+                        # self.send_data_to_stream(
+                        #     index=reasoning_index,
+                        #     data_format=output_format,
+                        #     chunk_delta=f"<ReasoningEnd Id={reasoning_no}/>",
+                        #     suffix=f"rs#{reasoning_no}",
+                        # )
+                        # reasoning_no += 1
 
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
@@ -967,6 +966,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.output_item.added":
                 if index == 0 and reasoning_index > 0:
                     index = reasoning_index + 1
+
                 if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                     elapsed = self._get_elapsed_time()
                     self.logger.info(f"[TIMELINE] T+{elapsed:.2f}ms: Output item added")
