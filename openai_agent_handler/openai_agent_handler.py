@@ -357,7 +357,17 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         # Upload each file to OpenAI and store metadata
         file_ids = []
+        image_urls = []
         for input_file in input_files:
+            if "encoded_image" in input_file:
+                image_urls.append(
+                    f"data:image/jpeg;base64,{input_file['encoded_image']}"
+                )
+                continue
+            if "image_url" in input_file:
+                image_urls.append(input_file["image_url"])
+                continue
+
             file_data = dict(input_file, purpose="user_data")
             uploaded_file = self.insert_file(**file_data)
             file_ids.append(uploaded_file["id"])
@@ -373,9 +383,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
             message_content = [
                 {"type": "input_text", "text": input_messages[-1]["content"]}
             ]
-            message_content.extend(
-                {"type": "input_file", "file_id": file_id} for file_id in file_ids
-            )
+            if file_ids:
+                message_content.extend(
+                    {"type": "input_file", "file_id": file_id} for file_id in file_ids
+                )
+            if image_urls:
+                message_content.extend(
+                    {"type": "input_image", "image_url": image_url}
+                    for image_url in image_urls
+                )
 
             # Update the last message with combined content
             input_messages[-1]["content"] = message_content
