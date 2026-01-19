@@ -228,7 +228,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             # Reset reasoning_summary for new conversation turn
             # Recursive calls (function call loops) will continue accumulating
-            if "reasoning_summary" in self.final_output:
+            if (
+                isinstance(self.final_output, dict)
+                and "reasoning_summary" in self.final_output
+            ):
                 del self.final_output["reasoning_summary"]
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
