@@ -18,8 +18,8 @@ import openai
 import pendulum
 import requests
 from ai_agent_handler import AIAgentEventHandler
+from silvaengine_utility import Debugger, Serializer
 from silvaengine_utility.performance_monitor import performance_monitor
-from silvaengine_utility.serializer import Serializer
 
 
 # ----------------------------
@@ -51,67 +51,71 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param agent: Dictionary containing agent configuration including OpenAI API key and model settings.
         :param setting: Additional settings passed as keyword arguments.
         """
-        AIAgentEventHandler.__init__(self, logger, agent, **setting)
+        try:
+            AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
-        # Configure HTTP client with connection pooling and keep-alive for better performance
-        # This significantly reduces the connection setup time between consecutive API calls
-        http_client = httpx.Client(
-            limits=httpx.Limits(
-                max_connections=100,  # Allow up to 100 concurrent connections
-                max_keepalive_connections=20,  # Keep 20 connections alive for reuse
-                keepalive_expiry=30.0,  # Keep connections alive for 30 seconds
-            ),
-            timeout=httpx.Timeout(
-                120.0, connect=10.0
-            ),  # 10s connect, 120s total timeout
-            http2=True,  # Enable HTTP/2 for better performance
-        )
+            # Configure HTTP client with connection pooling and keep-alive for better performance
+            # This significantly reduces the connection setup time between consecutive API calls
+            http_client = httpx.Client(
+                limits=httpx.Limits(
+                    max_connections=100,  # Allow up to 100 concurrent connections
+                    max_keepalive_connections=20,  # Keep 20 connections alive for reuse
+                    keepalive_expiry=30.0,  # Keep connections alive for 30 seconds
+                ),
+                timeout=httpx.Timeout(
+                    120.0, connect=10.0
+                ),  # 10s connect, 120s total timeout
+                http2=True,  # Enable HTTP/2 for better performance
+            )
 
-        self.client = openai.OpenAI(
-            api_key=self.agent["configuration"].get("openai_api_key"),
-            http_client=http_client,
-        )
+            self.client = openai.OpenAI(
+                api_key=self.agent["configuration"].get("openai_api_key"),
+                http_client=http_client,
+            )
 
-        # Build model settings with type conversions (performance optimization)
-        self.model_setting = {"instructions": self.agent["instructions"]}
-        for k, v in self.agent["configuration"].items():
-            if k in ["openai_api_key"]:
-                continue
+            # Build model settings with type conversions (performance optimization)
+            self.model_setting = {"instructions": self.agent["instructions"]}
+            for k, v in self.agent["configuration"].items():
+                if k in ["openai_api_key"]:
+                    continue
 
-            if k == "max_output_tokens":
-                v = int(v)
-            elif k in ["temperature", "top_p"]:
-                v = float(v)
-            # Convert Decimal to float for better performance
-            elif isinstance(v, Decimal):
-                v = float(v)
+                if k == "max_output_tokens":
+                    v = int(v)
+                elif k in ["temperature", "top_p"]:
+                    v = float(v)
+                # Convert Decimal to float for better performance
+                elif isinstance(v, Decimal):
+                    v = float(v)
 
-            self.model_setting[k] = v
+                self.model_setting[k] = v
 
-        # Cache frequently accessed configuration values (performance optimization)
-        self.output_format_type = (
-            self.model_setting.get("text", {"format": {"type": "text"}})
-            .get("format", {"type": "text"})
-            .get("type", "text")
-        )
+            # Cache frequently accessed configuration values (performance optimization)
+            self.output_format_type = (
+                self.model_setting.get("text", {"format": {"type": "text"}})
+                .get("format", {"type": "text"})
+                .get("type", "text")
+            )
 
-        # Validate reasoning configuration if present
-        if "reasoning" in self.model_setting:
-            if not isinstance(self.model_setting["reasoning"], dict):
-                if self.logger and self.logger.isEnabledFor(logging.WARNING):
-                    self.logger.warning(
-                        "Reasoning configuration should be a dictionary. "
-                        "Reasoning features may not work correctly."
-                    )
-            elif self.model_setting["reasoning"].get("summary") is None:
-                if self.logger and self.logger.isEnabledFor(logging.WARNING):
-                    self.logger.warning(
-                        "Reasoning summary is not enabled in configuration. "
-                        "Reasoning events will be skipped during streaming."
-                    )
+            # Validate reasoning configuration if present
+            if "reasoning" in self.model_setting:
+                if not isinstance(self.model_setting["reasoning"], dict):
+                    if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                        self.logger.warning(
+                            "Reasoning configuration should be a dictionary. "
+                            "Reasoning features may not work correctly."
+                        )
+                elif self.model_setting["reasoning"].get("summary") is None:
+                    if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                        self.logger.warning(
+                            "Reasoning summary is not enabled in configuration. "
+                            "Reasoning events will be skipped during streaming."
+                        )
 
-        # Enable/disable timeline logging (default: enabled for backward compatibility)
-        self.enable_timeline_log = setting.get("enable_timeline_log", False)
+            # Enable/disable timeline logging (default: enabled for backward compatibility)
+            self.enable_timeline_log = setting.get("enable_timeline_log", False)
+        except Exception as e:
+            Debugger.info(variable=e, stage=f"{__name__}:__init__")
+            raise
 
     def _check_retry_limit(self, retry_count: int) -> None:
         """
