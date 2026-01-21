@@ -68,12 +68,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 http2=True,  # Enable HTTP/2 for better performance
             )
 
-            Debugger.info(
-                variable=self.agent,
-                stage=f"{__name__}:initialize-1",
-                delimiter="**",
-            )
-
             self.client = openai.OpenAI(
                 api_key=self.agent["configuration"].get("openai_api_key"),
                 http_client=http_client,
@@ -183,10 +177,28 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :raises: Exception if API call fails or returns error.
         """
         try:
+            Debugger.info(
+                variable=kwargs,
+                stage=f"{__name__}:invoke_model",
+                delimiter="+",
+            )
+
             invoke_start = pendulum.now("UTC")
             variables = dict(self.model_setting, **kwargs)
 
+            Debugger.info(
+                variable=variables,
+                stage=f"{__name__}:invoke_model",
+                delimiter="**",
+            )
+
             result = self.client.responses.create(**variables)
+
+            Debugger.info(
+                variable=result,
+                stage=f"{__name__}:invoke_model",
+                delimiter="$",
+            )
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 invoke_end = pendulum.now("UTC")
