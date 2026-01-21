@@ -68,6 +68,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 http2=True,  # Enable HTTP/2 for better performance
             )
 
+            Debugger.info(
+                variable=self.agent,
+                stage=f"{__name__}:initialize-1",
+                delimiter="**",
+            )
+
             self.client = openai.OpenAI(
                 api_key=self.agent["configuration"].get("openai_api_key"),
                 http_client=http_client,
