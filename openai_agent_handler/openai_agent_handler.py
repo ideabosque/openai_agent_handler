@@ -69,7 +69,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             )
 
             self.client = openai.OpenAI(
-                api_key=self.agent["configuration"].get("openai_api_key"),
+                api_key=self.agent.get("configuration", {}).get("openai_api_key"),
                 http_client=http_client,
             )
 
@@ -128,6 +128,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             Exception: If retry_count exceeds MAX_RETRIES
         """
         MAX_RETRIES = 3
+
         if retry_count > MAX_RETRIES:
             error_msg = (
                 f"Maximum retry limit ({MAX_RETRIES}) exceeded for empty responses"
@@ -177,28 +178,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :raises: Exception if API call fails or returns error.
         """
         try:
-            Debugger.info(
-                variable=kwargs,
-                stage=f"{__name__}:invoke_model",
-                delimiter="+",
-            )
-
             invoke_start = pendulum.now("UTC")
             variables = dict(self.model_setting, **kwargs)
-
-            Debugger.info(
-                variable=variables,
-                stage=f"{__name__}:invoke_model",
-                delimiter="**",
-            )
-
             result = self.client.responses.create(**variables)
-
-            Debugger.info(
-                variable=result,
-                stage=f"{__name__}:invoke_model",
-                delimiter="$",
-            )
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 invoke_end = pendulum.now("UTC")
