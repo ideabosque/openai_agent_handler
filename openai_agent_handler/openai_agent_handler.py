@@ -280,6 +280,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "stream": stream,
                 }
             )
+            run_id = response.id
 
             # If streaming is enabled, process chunks
             if stream:
@@ -290,14 +291,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     queue=queue,
                     stream_event=stream_event,
                 )
-                result = None
             else:
                 # Otherwise, handle a normal (non-stream) response
                 self.handle_response(response, input_messages)
-                result = response.id
 
-            return result
-
+            return run_id
         except Exception as e:
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error in ask_model: {str(e)}")
