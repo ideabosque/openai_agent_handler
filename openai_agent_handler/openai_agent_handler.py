@@ -17,7 +17,6 @@ import httpx
 import openai
 import pendulum
 import requests
-
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Debugger, Serializer
 from silvaengine_utility.performance_monitor import performance_monitor
@@ -300,7 +299,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "stream": stream,
                 }
             )
-            run_id = response.id
+
+            try:
+                run_id = response.id
+            except AttributeError:
+                try:
+                    run_id = response.response.extensions.get("stream_id")
+                except AttributeError:
+                    run_id = None
 
             # If streaming is enabled, process chunks
             if stream:
