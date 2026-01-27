@@ -17,6 +17,7 @@ import httpx
 import openai
 import pendulum
 import requests
+
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Debugger, Serializer
 from silvaengine_utility.performance_monitor import performance_monitor
@@ -72,6 +73,18 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 api_key=self.agent.get("configuration", {}).get("openai_api_key"),
                 http_client=http_client,
             )
+
+            if "enabled_tools" in self.agent["configuration"]:
+                # Add tools if available - matching example.py structure
+                enabled_tools = []
+                if "tools" in self.agent["configuration"]:
+                    for tool in self.agent["configuration"]["tools"]:
+                        if tool["name"] not in self.agent["configuration"].get(
+                            "enabled_tools", []
+                        ):
+                            continue
+                        enabled_tools.append(tool)
+                self.agent["configuration"]["tools"] = enabled_tools
 
             # Build model settings with type conversions (performance optimization)
             self.model_setting = {"instructions": self.agent["instructions"]}
