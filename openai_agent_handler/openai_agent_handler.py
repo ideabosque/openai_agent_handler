@@ -17,6 +17,7 @@ import httpx
 import openai
 import pendulum
 import requests
+
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Debugger, Serializer
 from silvaengine_utility.performance_monitor import performance_monitor
@@ -300,18 +301,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 }
             )
 
-            try:
-                run_id = response.id
-            except AttributeError:
-                try:
-                    run_id = response.response.extensions.get("stream_id")
-                except AttributeError:
-                    run_id = None
+            run_id = None
 
             # If streaming is enabled, process chunks
             if stream:
                 # Note: run_id will be sent from handle_stream when response.created event is received
-                self.handle_stream(
+                run_id = self.handle_stream(
                     response,
                     input_messages,
                     queue=queue,
@@ -319,7 +314,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 )
             else:
                 # Otherwise, handle a normal (non-stream) response
-                self.handle_response(response, input_messages)
+                run_id = self.handle_response(response, input_messages)
 
             return run_id
         except Exception as e:
@@ -699,7 +694,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         response: Any,
         input_messages: List[Dict[str, Any]],
         retry_count: int = 0,
-    ) -> None:
+    ) -> str:
         """
         Processes model responses and routes them to appropriate handlers.
 
@@ -752,7 +747,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     input_messages,
                 )
                 self.ask_model(input_messages)
-                return
+                return response.id
 
             # For all other types, add reasoning if exists then reset
             if reasoning_item is not None:
@@ -801,7 +796,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self.handle_response(
                 next_response, input_messages, retry_count=retry_count + 1
             )
-            return
+            return response.id
 
         # Scenario 3: Valid response - set final output
         self.final_output.update(
@@ -813,6 +808,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             }
         )
 
+        return response.id
+
     def handle_stream(
         self,
         response_stream: Any,
@@ -820,7 +817,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         queue: Queue = None,
         stream_event: threading.Event = None,
         retry_count: int = 0,
-    ) -> None:
+    ) -> str:
         """
         Processes streaming responses from the model chunk by chunk.
 
@@ -836,6 +833,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         self._check_retry_limit(retry_count)
 
+        run_id = None
         message_id = None
         role = None
         accumulated_partial_reasoning_text = ""
@@ -861,6 +859,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         stream_start_time = pendulum.now("UTC")
 
         for chunk in response_stream:
+            if run_id is None:
+                run_id = chunk.response.id
             if chunk.type != "response.output_text.delta":
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug(f"Chunk type: {getattr(chunk, 'type', 'N/A')}")
@@ -886,17 +886,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     if chunk.type == "response.reasoning_summary_part.added":
                         # Reset accumulated reasoning for new block
                         accumulated_reasoning_block = []
-
-                        # ## Send initial message start signal to WebSocket server
-                        # # if reasoning_index != 0:
-                        # #     reasoning_index = 0
-                        # self.send_data_to_stream(
-                        #     index=reasoning_index,
-                        #     data_format=output_format,
-                        #     chunk_delta=f"<ReasoningStart Id={reasoning_no}/>",
-                        #     suffix=f"rs#{reasoning_no}",
-                        # )
-                        # reasoning_index += 1
 
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
@@ -959,15 +948,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
                             # Reset for next reasoning block
                             accumulated_reasoning_block = []
-
-                        # # Send message completion signal to WebSocket server
-                        # self.send_data_to_stream(
-                        #     index=reasoning_index,
-                        #     data_format=output_format,
-                        #     chunk_delta=f"<ReasoningEnd Id={reasoning_no}/>",
-                        #     suffix=f"rs#{reasoning_no}",
-                        # )
-                        # reasoning_no += 1
 
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
@@ -1116,7 +1096,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         self.ask_model(
                             input_messages, queue=queue, stream_event=stream_event
                         )
-                        return
+                        return run_id
 
                     if any(
                         output.type == "mcp_approval_request"
@@ -1165,7 +1145,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 stream_event=stream_event,
                 retry_count=retry_count + 1,
             )
-            return
+            return run_id
 
         # Scenario 3: Valid stream - set final output
         self.final_output.update(
@@ -1194,6 +1174,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self.logger.info(
                 f"[TIMELINE] T+{elapsed:.2f}ms: Post-processing complete (took {post_processing_time:.2f}ms)"
             )
+
+        return run_id
 
     def get_file(self, **kwargs: Dict[str, Any]) -> Dict[str, Any]:
         file = self.client.files.retrieve(kwargs["file_id"])
