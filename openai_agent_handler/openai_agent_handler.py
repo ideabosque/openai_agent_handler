@@ -857,8 +857,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         stream_start_time = pendulum.now("UTC")
 
-        Debugger.info(variable="Anthropic", stage=f"{__file__}.handle_stream")
-
         for chunk in response_stream:
             if run_id is None:
                 run_id = chunk.response.id
