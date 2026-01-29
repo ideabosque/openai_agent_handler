@@ -17,7 +17,6 @@ import httpx
 import openai
 import pendulum
 import requests
-
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Debugger, Serializer
 from silvaengine_utility.performance_monitor import performance_monitor
@@ -857,6 +856,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         index = 0
 
         stream_start_time = pendulum.now("UTC")
+
+        Debugger.info(variable="Anthropic", stage=f"{__file__}.handle_stream")
 
         for chunk in response_stream:
             if run_id is None:
