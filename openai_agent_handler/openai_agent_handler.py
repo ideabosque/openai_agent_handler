@@ -192,8 +192,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         try:
             invoke_start = pendulum.now("UTC")
             variables = dict(self.model_setting, **kwargs)
-
-            Debugger.info(variable=variables, stage=f"{__file__}.invoke_model")
             result = self.client.responses.create(**variables)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
@@ -295,7 +293,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
                 )
 
-            Debugger.info(variable=input_messages, stage=f"{__file__}.ask_model")
             response = self.invoke_model(
                 **{
                     "input": input_messages,
@@ -787,20 +784,19 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 )
 
         # Scenario 2: Empty response - retry (performance optimization)
-        if not self._has_valid_content(content):
-            if self.logger.isEnabledFor(logging.WARNING):
-                self.logger.warning(
-                    f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
-                )
+        # if not self._has_valid_content(content):
+        #     if self.logger.isEnabledFor(logging.WARNING):
+        #         self.logger.warning(
+        #             f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
+        #         )
 
-            Debugger.info(variable=input_messages, stage=f"{__file__}.ask_model")
-            next_response = self.invoke_model(
-                **{"input": input_messages, "stream": False}
-            )
-            self.handle_response(
-                next_response, input_messages, retry_count=retry_count + 1
-            )
-            return response.id
+        #     next_response = self.invoke_model(
+        #         **{"input": input_messages, "stream": False}
+        #     )
+        #     self.handle_response(
+        #         next_response, input_messages, retry_count=retry_count + 1
+        #     )
+        #     return response.id
 
         # Scenario 3: Valid response - set final output
         self.final_output.update(
@@ -1134,24 +1130,23 @@ class OpenAIEventHandler(AIAgentEventHandler):
         final_accumulated_text = "".join(accumulated_text_parts)
 
         # Scenario 2: Empty stream - retry (performance optimization)
-        if not received_any_content:
-            if self.logger.isEnabledFor(logging.WARNING):
-                self.logger.warning(
-                    f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
-                )
+        # if not received_any_content:
+        #     if self.logger.isEnabledFor(logging.WARNING):
+        #         self.logger.warning(
+        #             f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
+        #         )
 
-            Debugger.info(variable=input_messages, stage=f"{__file__}.ask_model")
-            next_response = self.invoke_model(
-                **{"input": input_messages, "stream": True}
-            )
-            self.handle_stream(
-                next_response,
-                input_messages,
-                queue=queue,
-                stream_event=stream_event,
-                retry_count=retry_count + 1,
-            )
-            return run_id
+        #     next_response = self.invoke_model(
+        #         **{"input": input_messages, "stream": True}
+        #     )
+        #     self.handle_stream(
+        #         next_response,
+        #         input_messages,
+        #         queue=queue,
+        #         stream_event=stream_event,
+        #         retry_count=retry_count + 1,
+        #     )
+        #     return run_id
 
         # Scenario 3: Valid stream - set final output
         self.final_output.update(
