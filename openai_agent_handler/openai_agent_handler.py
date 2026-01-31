@@ -192,6 +192,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         try:
             invoke_start = pendulum.now("UTC")
             variables = dict(self.model_setting, **kwargs)
+
+            Debugger.info(variable=variables, stage=f"{__file__}.invoke_model")
             result = self.client.responses.create(**variables)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
@@ -293,6 +295,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
                 )
 
+            Debugger.info(variable=input_messages, stage=f"{__file__}.ask_model")
             response = self.invoke_model(
                 **{
                     "input": input_messages,
@@ -789,6 +792,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.warning(
                     f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
                 )
+
+            Debugger.info(variable=input_messages, stage=f"{__file__}.ask_model")
             next_response = self.invoke_model(
                 **{"input": input_messages, "stream": False}
             )
@@ -1134,6 +1139,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.warning(
                     f"Received empty response from model, retrying (attempt {retry_count + 1}/5)..."
                 )
+
+            Debugger.info(variable=input_messages, stage=f"{__file__}.ask_model")
             next_response = self.invoke_model(
                 **{"input": input_messages, "stream": True}
             )
