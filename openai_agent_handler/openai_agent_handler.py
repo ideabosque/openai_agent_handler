@@ -515,7 +515,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     f"[handle_function_call][{function_call_data['name']}] Updating conversation history"
                 )
 
-            self._update_conversation_history(
+            input_messages = self._update_conversation_history(
                 function_call_data=function_call_data,
                 function_output=function_output,
                 input_messages=input_messages,
@@ -696,7 +696,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         function_call_data: Dict[str, Any],
         function_output: Any,
         input_messages: List[Dict[str, Any]],
-    ) -> None:
+    ) -> List[Dict[str, Any]]:
         """
         Updates the conversation history with function call details and output.
 
@@ -704,14 +704,16 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param function_output: Result returned from function execution.
         :param input_messages: List of messages to update with function details.
         """
-        input_messages.append(function_call_data)
-        input_messages.append(
+        messages = input_messages.copy()
+        messages.append(function_call_data)
+        messages.append(
             {
                 "type": "function_call_output",
                 "call_id": function_call_data["call_id"],
                 "output": Serializer.json_dumps(function_output),
             }
         )
+        return messages
 
     def handle_response(
         self,
