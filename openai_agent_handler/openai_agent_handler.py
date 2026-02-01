@@ -54,6 +54,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         try:
             AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
+            self._ask_model_depth = 1
+
             # Configure HTTP client with connection pooling and keep-alive for better performance
             # This significantly reduces the connection setup time between consecutive API calls
             http_client = httpx.Client(
@@ -204,6 +206,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             return result
         except Exception as e:
+            Debugger.info(
+                variable=f"invoke_model: {e}",
+                stage=f"{__file__}.invoke_model"
+            )
+
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
@@ -232,9 +239,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         # Track recursion depth to identify top-level vs recursive calls
         if not hasattr(self, "_ask_model_depth"):
-            self._ask_model_depth = 0
-
-        self._ask_model_depth += 1
+            self._ask_model_depth = 1
+        
         is_top_level = self._ask_model_depth == 1
 
         # Initialize global start time only on top-level ask_model call
@@ -277,21 +283,21 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             self._process_user_file_ids(input_messages[:-1])
 
-            # Clean up input messages to remove broken tool sequences (performance optimization)
-            cleanup_start = pendulum.now("UTC")
-            cleanup_end = pendulum.now("UTC")
-            cleanup_time = (cleanup_end - cleanup_start).total_seconds() * 1000
+            # # Clean up input messages to remove broken tool sequences (performance optimization)
+            # cleanup_start = pendulum.now("UTC")
+            # cleanup_end = pendulum.now("UTC")
+            # cleanup_time = (cleanup_end - cleanup_start).total_seconds() * 1000
 
-            if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                # Track total preparation time before API call
-                preparation_end = pendulum.now("UTC")
-                preparation_time = (
-                    preparation_end - ask_model_start
-                ).total_seconds() * 1000
-                elapsed = self._get_elapsed_time()
-                self.logger.info(
-                    f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
-                )
+            # if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
+            #     # Track total preparation time before API call
+            #     preparation_end = pendulum.now("UTC")
+            #     preparation_time = (
+            #         preparation_end - ask_model_start
+            #     ).total_seconds() * 1000
+            #     elapsed = self._get_elapsed_time()
+            #     self.logger.info(
+            #         f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
+            #     )
 
             response = self.invoke_model(
                 **{
@@ -315,23 +321,29 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 # Otherwise, handle a normal (non-stream) response
                 run_id = self.handle_response(response, input_messages)
 
+            self._ask_model_depth += 1
             return run_id
         except Exception as e:
+            Debugger.info(
+                variable=f"ask_model: {e}",
+                stage=f"{__file__}.ask_model"
+            )
+
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error in ask_model: {str(e)}")
             raise Exception(f"Failed to process model request: {str(e)}")
-        finally:
-            # Decrement depth when exiting ask_model
-            self._ask_model_depth -= 1
+        # finally:
+        #     # Decrement depth when exiting ask_model
+        #     self._ask_model_depth -= 1
 
-            # Reset timeline when returning to depth 0 (top-level call complete)
-            if self._ask_model_depth == 0:
-                if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                    elapsed = self._get_elapsed_time()
-                    self.logger.info(
-                        f"[TIMELINE] T+{elapsed:.2f}ms: Run complete - Resetting timeline"
-                    )
-                self._global_start_time = None
+        #     # Reset timeline when returning to depth 0 (top-level call complete)
+        #     if self._ask_model_depth == 0:
+        #         if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
+        #             elapsed = self._get_elapsed_time()
+        #             self.logger.info(
+        #                 f"[TIMELINE] T+{elapsed:.2f}ms: Run complete - Resetting timeline"
+        #             )
+        #         self._global_start_time = None
 
     def _attach_files_into_code_interpreter(self, file_ids) -> bool:
         # Find existing code_interpreter tool if it exists
@@ -547,8 +559,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 )
 
             return input_messages
-
         except Exception as e:
+            Debugger.info(
+                variable=f"handle_function_call: {e}",
+                stage=f"{__file__}.handle_function_call"
+            )
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error in handle_function_call: {e}")
             raise
@@ -584,6 +599,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return arguments
 
         except Exception as e:
+            Debugger.info(
+                variable=f"_execute_function: {e}",
+                stage=f"{__file__}._execute_function"
+            )
             log = traceback.format_exc()
             self.invoke_async_funct(
                 "async_insert_update_tool_call",
@@ -653,6 +672,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return function_output
 
         except Exception as e:
+            Debugger.info(
+                variable=f"_execute_function: {e}",
+                stage=f"{__file__}._execute_function"
+            )
+            
             log = traceback.format_exc()
             # Reuse cached arguments_json (performance optimization)
             self.invoke_async_funct(
@@ -706,7 +730,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param input_messages: Current conversation history.
         :param retry_count: Current retry count (max 5 retries).
         """
-        self._check_retry_limit(retry_count)
+        # self._check_retry_limit(retry_count)
 
         message_id = None
         role = None
@@ -831,7 +855,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param stream_event: Event to signal when streaming is complete.
         :param retry_count: Current retry count (max 5 retries).
         """
-        self._check_retry_limit(retry_count)
+        # self._check_retry_limit(retry_count)
 
         run_id = None
         message_id = None
