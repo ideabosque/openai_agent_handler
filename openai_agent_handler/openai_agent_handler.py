@@ -55,6 +55,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
             self._ask_model_depth = 1
+            self._global_start_time = 0
 
             # Configure HTTP client with connection pooling and keep-alive for better performance
             # This significantly reduces the connection setup time between consecutive API calls
@@ -207,8 +208,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return result
         except Exception as e:
             Debugger.info(
-                variable=f"invoke_model: {e}",
-                stage=f"{__file__}.invoke_model"
+                variable=f"invoke_model: {e}", stage=f"{__file__}.invoke_model"
             )
 
             if self.logger.isEnabledFor(logging.ERROR):
@@ -240,12 +240,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
         # Track recursion depth to identify top-level vs recursive calls
         if not hasattr(self, "_ask_model_depth"):
             self._ask_model_depth = 1
-        
-        is_top_level = self._ask_model_depth == 1
 
         # Initialize global start time only on top-level ask_model call
         # Recursive calls will use the same start time for the entire run timeline
-        if is_top_level:
+        if self._ask_model_depth == 1:
             self._global_start_time = ask_model_start
 
             # Reset reasoning_summary for new conversation turn
@@ -312,22 +310,22 @@ class OpenAIEventHandler(AIAgentEventHandler):
             if stream:
                 # Note: run_id will be sent from handle_stream when response.created event is received
                 run_id = self.handle_stream(
-                    response,
-                    input_messages,
+                    response_stream=response,
+                    input_messages=input_messages,
                     queue=queue,
                     stream_event=stream_event,
                 )
             else:
                 # Otherwise, handle a normal (non-stream) response
-                run_id = self.handle_response(response, input_messages)
+                run_id = self.handle_response(
+                    response=response,
+                    input_messages=input_messages,
+                )
 
             self._ask_model_depth += 1
             return run_id
         except Exception as e:
-            Debugger.info(
-                variable=f"ask_model: {e}",
-                stage=f"{__file__}.ask_model"
-            )
+            Debugger.info(variable=f"ask_model: {e}", stage=f"{__file__}.ask_model")
 
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error in ask_model: {str(e)}")
@@ -516,8 +514,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.info(
                     f"[handle_function_call][{function_call_data['name']}] Updating conversation history"
                 )
+
             self._update_conversation_history(
-                function_call_data, function_output, input_messages
+                function_call_data=function_call_data,
+                function_output=function_output,
+                input_messages=input_messages,
             )
 
             # Continue conversation
@@ -526,26 +527,26 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     f"[handle_function_call][{function_call_data['name']}] Continuing conversation"
                 )
 
-            if self._run is None:
-                self._short_term_memory.append(
-                    {
-                        "message": {
-                            "role": self.agent["tool_call_role"],
-                            "content": Serializer.json_dumps(
-                                {
-                                    "tool": {
-                                        "tool_call_id": tool_call.id,
-                                        "tool_type": tool_call.type,
-                                        "name": tool_call.name,
-                                        "arguments": arguments,
-                                    },
-                                    "output": function_output,
-                                }
-                            ),
-                        },
-                        "created_at": pendulum.now("UTC"),
-                    }
-                )
+            # if self._run is None:
+            #     self._short_term_memory.append(
+            #         {
+            #             "message": {
+            #                 "role": self.agent["tool_call_role"],
+            #                 "content": Serializer.json_dumps(
+            #                     {
+            #                         "tool": {
+            #                             "tool_call_id": tool_call.id,
+            #                             "tool_type": tool_call.type,
+            #                             "name": tool_call.name,
+            #                             "arguments": arguments,
+            #                         },
+            #                         "output": function_output,
+            #                     }
+            #                 ),
+            #             },
+            #             "created_at": pendulum.now("UTC"),
+            #         }
+            #     )
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 # Log function call execution time
@@ -562,7 +563,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         except Exception as e:
             Debugger.info(
                 variable=f"handle_function_call: {e}",
-                stage=f"{__file__}.handle_function_call"
+                stage=f"{__file__}.handle_function_call",
             )
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error in handle_function_call: {e}")
@@ -601,7 +602,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         except Exception as e:
             Debugger.info(
                 variable=f"_execute_function: {e}",
-                stage=f"{__file__}._execute_function"
+                stage=f"{__file__}._execute_function",
             )
             log = traceback.format_exc()
             self.invoke_async_funct(
@@ -674,9 +675,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
         except Exception as e:
             Debugger.info(
                 variable=f"_execute_function: {e}",
-                stage=f"{__file__}._execute_function"
+                stage=f"{__file__}._execute_function",
             )
-            
+
             log = traceback.format_exc()
             # Reuse cached arguments_json (performance optimization)
             self.invoke_async_funct(
