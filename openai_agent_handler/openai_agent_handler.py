@@ -208,7 +208,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return result
         except Exception as e:
             Debugger.info(
-                variable=f"invoke_model: {e}", stage=f"{__file__}.invoke_model"
+                variable=f"invoke_model: {e}",
+                stage=f"{__file__}.invoke_model",
             )
 
             if self.logger.isEnabledFor(logging.ERROR):
@@ -297,6 +298,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
             #         f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
             #     )
 
+            Debugger.info(
+                variable=input_messages,
+                stage=f"{__file__}.ask_model.input_messages",
+                delimiter="#",
+            )
             response = self.invoke_model(
                 **{
                     "input": input_messages,
