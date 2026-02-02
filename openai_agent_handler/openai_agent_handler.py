@@ -299,7 +299,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             response = self.invoke_model(
                 **{
-                    "input": input_messages,
+                    "input": input_messages[-1:],
                     "stream": stream,
                 }
             )
