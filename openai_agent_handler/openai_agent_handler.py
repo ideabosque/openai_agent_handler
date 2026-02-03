@@ -128,8 +128,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             # Enable/disable timeline logging (default: enabled for backward compatibility)
             self.enable_timeline_log = setting.get("enable_timeline_log", False)
-        except Exception as e:
-            Debugger.info(variable=e, stage=f"{__name__}:__init__")
+        except Exception:
             raise
 
     def _check_retry_limit(self, retry_count: int) -> None:
@@ -207,11 +206,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             return result
         except Exception as e:
-            Debugger.info(
-                variable=f"invoke_model: {e}",
-                stage=f"{__file__}.invoke_model",
-            )
-
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
@@ -298,11 +292,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             #         f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
             #     )
 
-            Debugger.info(
-                variable=input_messages,
-                stage=f"{__file__}.ask_model.input_messages",
-                delimiter="#",
-            )
             response = self.invoke_model(
                 **{
                     "input": input_messages,
@@ -331,8 +320,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             self._ask_model_depth += 1
             return run_id
         except Exception as e:
-            Debugger.info(variable=f"ask_model: {e}", stage=f"{__file__}.ask_model")
-
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error in ask_model: {str(e)}")
             raise Exception(f"Failed to process model request: {str(e)}")
@@ -567,10 +554,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             return input_messages
         except Exception as e:
-            Debugger.info(
-                variable=f"handle_function_call: {e}",
-                stage=f"{__file__}.handle_function_call",
-            )
             if self.logger.isEnabledFor(logging.ERROR):
                 self.logger.error(f"Error in handle_function_call: {e}")
             raise
@@ -608,10 +591,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return arguments
 
         except Exception as e:
-            Debugger.info(
-                variable=f"_execute_function: {e}",
-                stage=f"{__file__}._execute_function",
-            )
             log = traceback.format_exc()
             self.invoke_async_funct(
                 module_name="ai_agent_core_engine",
@@ -687,11 +666,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return function_output
 
         except Exception as e:
-            Debugger.info(
-                variable=f"_execute_function: {e}",
-                stage=f"{__file__}._execute_function",
-            )
-
             log = traceback.format_exc()
             # Reuse cached arguments_json (performance optimization)
             self.invoke_async_funct(
