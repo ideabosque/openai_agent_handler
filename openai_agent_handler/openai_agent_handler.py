@@ -215,7 +215,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         input_messages: List[Dict[str, Any]],
         queue: Queue = None,
         stream_event: threading.Event = None,
-        input_files: List[str] = [],
+        input_files: Optional[List[Dict[str, Any]]] = None,
         model_setting: Dict[str, Any] = None,
     ) -> Optional[str]:
         """
@@ -268,6 +268,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 return None
 
             stream = True if queue is not None else False
+            input_files = input_files or []
 
             # Add model-specific settings if provided
             if model_setting:
@@ -479,13 +480,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "status": tool_call.status,
             }
 
-            # Record initial function call (with conditional logging)
-            if self.logger.isEnabledFor(logging.INFO):
-                self.logger.info(
-                    f"[handle_function_call] Starting function call recording for {function_call_data['name']}"
-                )
-            self._record_function_call_start(function_call_data)
-
             # Parse and process arguments
             if self.logger.isEnabledFor(logging.INFO):
                 self.logger.info(
@@ -554,21 +548,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error(f"Error in handle_function_call: {e}")
             raise
 
-    def _record_function_call_start(self, function_call_data: Dict[str, Any]) -> None:
-        """
-        Records the start of a function call execution in the system.
-
-        :param function_call_data: Dictionary containing function call metadata.
-        """
-        self.invoke_async_funct(
-            "async_insert_update_tool_call",
-            **{
-                "tool_call_id": function_call_data["id"],
-                "tool_type": function_call_data["type"],
-                "name": function_call_data["name"],
-            },
-        )
-
     def _process_function_arguments(
         self, function_call_data: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -624,6 +603,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
+                    "tool_type": function_call_data["type"],
+                    "name": function_call_data["name"],
                     "arguments": arguments_json,
                     "status": "in_progress",
                 },
@@ -836,14 +817,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
         run_id = None
         message_id = None
         role = None
-        accumulated_partial_reasoning_text = ""
+        # Use list-based accumulation to avoid O(n^2) string concatenation
+        accumulated_partial_reasoning_parts = []
         # Accumulate complete reasoning for the current block
         accumulated_reasoning_block = []
         # Use list for efficient string concatenation (performance optimization)
         accumulated_text_parts = []
         output_files = []
-        accumulated_partial_json = ""
-        accumulated_partial_text = ""
+        accumulated_partial_json_parts = []
+        accumulated_partial_text_parts = []
         received_any_content = False
         # Use cached output format type (performance optimization)
         output_format = self.output_format_type
@@ -895,32 +877,36 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                 f"[TIMELINE] T+{elapsed:.2f}ms: Reasoning added"
                             )
                     elif chunk.type == "response.reasoning_summary_text.delta":
-                        print(chunk.delta, end="", flush=True)
+                        if self.logger.isEnabledFor(logging.DEBUG):
+                            print(chunk.delta, end="", flush=True)
 
                         # Accumulate for final summary
                         accumulated_reasoning_block.append(chunk.delta)
 
-                        accumulated_partial_reasoning_text += chunk.delta
+                        accumulated_partial_reasoning_parts.append(chunk.delta)
                         # Check if text contains XML-style tags and update format
-                        reasoning_index, accumulated_partial_reasoning_text = (
-                            self.process_text_content(
-                                reasoning_index,
-                                accumulated_partial_reasoning_text,
-                                output_format,
-                                suffix=f"rs#{reasoning_no}",
-                            )
+                        reasoning_index, remaining = self.process_text_content(
+                            reasoning_index,
+                            "".join(accumulated_partial_reasoning_parts),
+                            output_format,
+                            suffix=f"rs#{reasoning_no}",
+                        )
+                        accumulated_partial_reasoning_parts = (
+                            [remaining] if remaining else []
                         )
 
                     elif chunk.type == "response.reasoning_summary_text.done":
                         # Send message completion signal to WebSocket server
-                        if len(accumulated_partial_reasoning_text) > 0:
+                        if accumulated_partial_reasoning_parts:
                             self.send_data_to_stream(
                                 index=reasoning_index,
                                 data_format=output_format,
-                                chunk_delta=accumulated_partial_reasoning_text,
+                                chunk_delta="".join(
+                                    accumulated_partial_reasoning_parts
+                                ),
                                 suffix=f"rs#{reasoning_no}",
                             )
-                            accumulated_partial_reasoning_text = ""
+                            accumulated_partial_reasoning_parts = []
                             # reasoning_index += 1
                     elif chunk.type == "response.reasoning_summary_part.done":
                         # Save accumulated reasoning text to final_output
@@ -986,7 +972,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.output_text.delta":
                 received_any_content = True
 
-                print(chunk.delta, end="", flush=True)
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    print(chunk.delta, end="", flush=True)
 
                 # Accumulate in list for efficient concatenation (performance optimization)
                 accumulated_text_parts.append(chunk.delta)
@@ -995,32 +982,38 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 # when complete JSON objects are detected. This ensures valid JSON
                 # is sent to the WebSocket server.
                 if output_format in ["json_object", "json_schema"]:
-                    accumulated_partial_json += chunk.delta
+                    accumulated_partial_json_parts.append(chunk.delta)
                     # Temporarily build accumulated_text for processing
                     temp_accumulated_text = "".join(accumulated_text_parts)
-                    index, temp_accumulated_text, accumulated_partial_json = (
+                    index, temp_accumulated_text, remaining_json = (
                         self.process_and_send_json(
                             index,
                             temp_accumulated_text,
-                            accumulated_partial_json,
+                            "".join(accumulated_partial_json_parts),
                             output_format,
                         )
                     )
+                    accumulated_partial_json_parts = (
+                        [remaining_json] if remaining_json else []
+                    )
                 else:
-                    accumulated_partial_text += chunk.delta
+                    accumulated_partial_text_parts.append(chunk.delta)
                     # Check if text contains XML-style tags and update format
-                    index, accumulated_partial_text = self.process_text_content(
-                        index, accumulated_partial_text, output_format
+                    index, remaining_text = self.process_text_content(
+                        index, "".join(accumulated_partial_text_parts), output_format
+                    )
+                    accumulated_partial_text_parts = (
+                        [remaining_text] if remaining_text else []
                     )
             elif chunk.type == "response.output_text.done":
                 # Send message completion signal to WebSocket server
-                if len(accumulated_partial_text) > 0:
+                if accumulated_partial_text_parts:
                     self.send_data_to_stream(
                         index=index,
                         data_format=output_format,
-                        chunk_delta=accumulated_partial_text,
+                        chunk_delta="".join(accumulated_partial_text_parts),
                     )
-                    accumulated_partial_text = ""
+                    accumulated_partial_text_parts = []
                     index += 1
             elif chunk.type == "response.content_part.done":
                 # Send message completion signal to WebSocket server
@@ -1045,45 +1038,50 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         f"[TIMELINE] T+{elapsed:.2f}ms: Stream completed, run_id={chunk.response.id} (took {time_to_completion:.2f}ms from stream start)"
                     )
 
-                # Process any final output objects in chunk.response
+                # Single-pass processing of final output objects
                 if hasattr(chunk.response, "output") and chunk.response.output:
-                    # Check if output is a function call or message
-                    if any(
-                        output.type == "function_call"
-                        for output in chunk.response.output
-                        if hasattr(output, "type")
-                    ):
-                        reasoning_item = None
-                        for output in chunk.response.output:
-                            # Handle reasoning - store it for function call context
-                            # Note: Reasoning summary is already captured during streaming
-                            # at response.reasoning_summary_part.done event (lines 882-907)
-                            if output.type == "reasoning":
-                                reasoning_item = {
-                                    "type": "reasoning",
-                                    "id": output.id,
-                                    "summary": output.summary,
-                                }
-                                continue
+                    has_function_call = False
+                    reasoning_item = None
+                    last_message_output = None
 
-                            # Handle function_call - add reasoning if exists, then process
-                            if output.type == "function_call":
-                                if reasoning_item is not None:
-                                    input_messages.append(reasoning_item)
-                                reasoning_item = None
+                    for output in chunk.response.output:
+                        output_type = getattr(output, "type", None)
 
-                                input_messages = self.handle_function_call(
-                                    output, input_messages
-                                )
-                                continue
+                        if output_type == "mcp_approval_request":
+                            raise Exception(
+                                "MCP Approval Request is not currently supported"
+                            )
 
-                            # For all other types, reset reasoning
+                        if output_type == "reasoning":
+                            reasoning_item = {
+                                "type": "reasoning",
+                                "id": output.id,
+                                "summary": output.summary,
+                            }
+                            continue
+
+                        if output_type == "function_call":
+                            has_function_call = True
+                            if reasoning_item is not None:
+                                input_messages.append(reasoning_item)
                             reasoning_item = None
 
+                            input_messages = self.handle_function_call(
+                                output, input_messages
+                            )
+                            continue
+
+                        # Track last message output for metadata extraction
+                        if output_type == "message":
+                            last_message_output = output
+
+                        # Reset reasoning for non-function-call, non-reasoning types
+                        reasoning_item = None
+
+                    if has_function_call:
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
                         ):
-                            # Log time before recursive ask_model call after function execution
                             recursive_call_start = pendulum.now("UTC")
                             time_from_stream_start = (
                                 recursive_call_start - stream_start_time
@@ -1098,18 +1096,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         )
                         return run_id
 
-                    if any(
-                        output.type == "mcp_approval_request"
-                        for output in chunk.response.output
-                        if hasattr(output, "type")
-                    ):
-                        raise Exception(
-                            "MCP Approval Request is not currently supported"
-                        )
-
-                    if hasattr(chunk.response.output[-1], "content"):
+                    # Extract metadata from last output item
+                    final_output_item = last_message_output or chunk.response.output[-1]
+                    if hasattr(final_output_item, "content"):
                         for ann in getattr(
-                            chunk.response.output[-1].content[-1], "annotations", []
+                            final_output_item.content[-1], "annotations", []
                         ):
                             if ann.type == "container_file_citation":
                                 output_files.append(
@@ -1120,8 +1111,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                     }
                                 )
 
-                    message_id = chunk.response.output[-1].id
-                    role = chunk.response.output[-1].role
+                    message_id = final_output_item.id
+                    role = final_output_item.role
 
         # Log start of post-processing
         post_processing_start = pendulum.now("UTC")
