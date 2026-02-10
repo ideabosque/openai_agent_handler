@@ -817,7 +817,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         queue: Queue = None,
         stream_event: threading.Event = None,
         retry_count: int = 0,
-    ) -> str:
+    ) -> str | None:
         """
         Processes streaming responses from the model chunk by chunk.
 
