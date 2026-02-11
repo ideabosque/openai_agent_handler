@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 import httpx
 import openai
 import pendulum
-import requests
 
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Debugger, Serializer
@@ -69,22 +68,23 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 http2=True,  # Enable HTTP/2 for better performance
             )
 
+            # Persist for reuse in file operations (insert_file, get_output_file)
+            self.http_client = http_client
+
             self.client = openai.OpenAI(
                 api_key=self.agent.get("configuration", {}).get("openai_api_key"),
                 http_client=http_client,
             )
 
             if "enabled_tools" in self.agent["configuration"]:
-                # Add tools if available - matching example.py structure
-                enabled_tools = []
+                # Filter tools using set-based membership for O(1) lookups
+                enabled_set = set(self.agent["configuration"]["enabled_tools"])
                 if "tools" in self.agent["configuration"]:
-                    for tool in self.agent["configuration"]["tools"]:
-                        if tool["name"] not in self.agent["configuration"].get(
-                            "enabled_tools", []
-                        ):
-                            continue
-                        enabled_tools.append(tool)
-                self.agent["configuration"]["tools"] = enabled_tools
+                    self.agent["configuration"]["tools"] = [
+                        tool
+                        for tool in self.agent["configuration"]["tools"]
+                        if tool["name"] in enabled_set
+                    ]
 
             # Build model settings with type conversions (performance optimization)
             self.model_setting = {"instructions": self.agent["instructions"]}
@@ -126,6 +126,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
             # Enable/disable timeline logging (default: enabled for backward compatibility)
             self.enable_timeline_log = setting.get("enable_timeline_log", False)
+
+            # Cached code_interpreter tool reference (invalidated on model_setting update)
+            self._cached_code_interpreter_tool = None
+            self._code_interpreter_cache_valid = False
         except Exception as e:
             Debugger.info(variable=e, stage=f"{__name__}:__init__")
             raise
@@ -191,13 +195,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :raises: Exception if API call fails or returns error.
         """
         try:
-            invoke_start = pendulum.now("UTC")
+            if self.enable_timeline_log:
+                invoke_start = pendulum.now("UTC")
+
             variables = dict(self.model_setting, **kwargs)
             result = self.client.responses.create(**variables)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                invoke_end = pendulum.now("UTC")
-                invoke_time = (invoke_end - invoke_start).total_seconds() * 1000
+                invoke_time = (pendulum.now("UTC") - invoke_start).total_seconds() * 1000
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: API call returned (took {invoke_time:.2f}ms)"
@@ -209,7 +214,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
 
-    # @Utility.performance_monitor.monitor_operation(operation_name="OpenAI")
+    @performance_monitor.monitor_operation(operation_name="OpenAI")
     def ask_model(
         self,
         input_messages: List[Dict[str, Any]],
@@ -228,8 +233,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :return: Response ID for non-streaming requests, None for streaming.
         :raises: Exception if request fails or client is not configured.
         """
-        # Track preparation time
-        ask_model_start = pendulum.now("UTC")
+        # Track preparation time (only when timeline logging is enabled)
+        if self.enable_timeline_log:
+            ask_model_start = pendulum.now("UTC")
 
         # Track recursion depth to identify top-level vs recursive calls
         if not hasattr(self, "_ask_model_depth"):
@@ -240,7 +246,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         # Initialize global start time only on top-level ask_model call
         # Recursive calls will use the same start time for the entire run timeline
-        if is_top_level:
+        if is_top_level and self.enable_timeline_log:
             self._global_start_time = ask_model_start
 
             # Reset reasoning_summary for new conversation turn
@@ -273,26 +279,22 @@ class OpenAIEventHandler(AIAgentEventHandler):
             # Add model-specific settings if provided
             if model_setting:
                 self.model_setting.update(model_setting)
+                # Invalidate tool cache since tools may have changed
+                self._code_interpreter_cache_valid = False
 
             if input_files:
                 input_messages = self._process_input_files(input_files, input_messages)
 
             self._process_user_file_ids(input_messages[:-1])
 
-            # Clean up input messages to remove broken tool sequences (performance optimization)
-            cleanup_start = pendulum.now("UTC")
-            cleanup_end = pendulum.now("UTC")
-            cleanup_time = (cleanup_end - cleanup_start).total_seconds() * 1000
-
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 # Track total preparation time before API call
-                preparation_end = pendulum.now("UTC")
                 preparation_time = (
-                    preparation_end - ask_model_start
+                    pendulum.now("UTC") - ask_model_start
                 ).total_seconds() * 1000
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
-                    f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
+                    f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms)"
                 )
 
             response = self.invoke_model(
@@ -335,16 +337,22 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     )
                 self._global_start_time = None
 
+    def _get_code_interpreter_tool(self) -> Optional[Dict[str, Any]]:
+        """Return cached code_interpreter tool reference, scanning only on cache miss."""
+        if not self._code_interpreter_cache_valid:
+            self._cached_code_interpreter_tool = next(
+                (
+                    tool
+                    for tool in self.model_setting.get("tools", [])
+                    if tool.get("type") == "code_interpreter"
+                ),
+                None,
+            )
+            self._code_interpreter_cache_valid = True
+        return self._cached_code_interpreter_tool
+
     def _attach_files_into_code_interpreter(self, file_ids) -> bool:
-        # Find existing code_interpreter tool if it exists
-        code_interpreter_tool = next(
-            (
-                tool
-                for tool in self.model_setting.get("tools", [])
-                if tool.get("type") == "code_interpreter"
-            ),
-            None,
-        )
+        code_interpreter_tool = self._get_code_interpreter_tool()
 
         if not code_interpreter_tool:
             return False
@@ -355,12 +363,37 @@ class OpenAIEventHandler(AIAgentEventHandler):
         if "file_ids" not in code_interpreter_tool["container"]:
             code_interpreter_tool["container"]["file_ids"] = []
 
-        # Append file_ids to existing code_interpreter tool and ensure uniqueness
-        code_interpreter_tool["container"]["file_ids"] = list(
-            set(code_interpreter_tool["container"]["file_ids"] + file_ids)
-        )
+        # Append file_ids using incremental set-based dedup (avoids list→set→list rebuild)
+        existing = set(code_interpreter_tool["container"]["file_ids"])
+        for fid in file_ids:
+            if fid not in existing:
+                existing.add(fid)
+                code_interpreter_tool["container"]["file_ids"].append(fid)
 
         return True
+
+    def _trim_messages_for_recursion(
+        self, input_messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Apply sliding window to prevent unbounded message growth during recursive calls.
+        Preserves function_call / function_call_output pair integrity at the trim boundary.
+
+        Uses the agent's num_of_messages setting as the window size.
+        If not set or messages are within the limit, returns the list unchanged.
+        """
+        max_messages = self.agent.get("num_of_messages")
+        if not max_messages or len(input_messages) <= max_messages:
+            return input_messages
+
+        # Trim from the beginning, keeping the most recent messages
+        trimmed = input_messages[-max_messages:]
+
+        # If we split a function_call_output from its function_call, drop the orphan
+        if trimmed and trimmed[0].get("type") == "function_call_output":
+            trimmed = trimmed[1:]
+
+        return trimmed
 
     def _process_input_files(
         self, input_files: List[Dict[str, Any]], input_messages: List[Dict[str, Any]]
@@ -462,8 +495,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :raises: ValueError if tool_call is invalid.
                 Exception if function execution fails.
         """
-        # Track function call timing
-        function_call_start = pendulum.now("UTC")
+        # Track function call timing (only when timeline logging is enabled)
+        if self.enable_timeline_log:
+            function_call_start = pendulum.now("UTC")
 
         # Validate tool call
         if not tool_call or not hasattr(tool_call, "id"):
@@ -492,7 +526,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.info(
                     f"[handle_function_call] Executing function {function_call_data['name']} with arguments {arguments}"
                 )
-            function_output = self._execute_function(function_call_data, arguments)
+            function_output, serialized_output = self._execute_function(
+                function_call_data, arguments
+            )
 
             # Update conversation history
             if self.logger.isEnabledFor(logging.INFO):
@@ -500,7 +536,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     f"[handle_function_call][{function_call_data['name']}] Updating conversation history"
                 )
             self._update_conversation_history(
-                function_call_data, function_output, input_messages
+                function_call_data, function_output, input_messages, serialized_output
             )
 
             # Continue conversation
@@ -566,7 +602,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
         except Exception as e:
             log = traceback.format_exc()
             self.invoke_async_funct(
-                "async_insert_update_tool_call",
+                module_name="ai_agent_core_engine",
+                class_name="AIAgentCoreEngine",
+                function_name="async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
                     "arguments": function_call_data.get("arguments", "{}"),
@@ -600,7 +638,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             arguments_json = Serializer.json_dumps(arguments)
 
             self.invoke_async_funct(
-                "async_insert_update_tool_call",
+                module_name="ai_agent_core_engine",
+                class_name="AIAgentCoreEngine",
+                function_name="async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
                     "tool_type": function_call_data["type"],
@@ -610,35 +650,42 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 },
             )
 
-            # Track actual function execution time
-            function_exec_start = pendulum.now("UTC")
+            if self.enable_timeline_log:
+                function_exec_start = pendulum.now("UTC")
+
             function_output = agent_function(**arguments)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                function_exec_end = pendulum.now("UTC")
                 function_exec_time = (
-                    function_exec_end - function_exec_start
+                    pendulum.now("UTC") - function_exec_start
                 ).total_seconds() * 1000
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: Function '{function_call_data['name']}' executed (took {function_exec_time:.2f}ms)"
                 )
 
+            # Serialize once and reuse in both DB write and conversation history
+            serialized_output = Serializer.json_dumps(function_output)
+
             self.invoke_async_funct(
-                "async_insert_update_tool_call",
+                module_name="ai_agent_core_engine",
+                class_name="AIAgentCoreEngine",
+                function_name="async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
-                    "content": Serializer.json_dumps(function_output),
+                    "content": serialized_output,
                     "status": "completed",
                 },
             )
-            return function_output
+            return function_output, serialized_output
 
         except Exception as e:
             log = traceback.format_exc()
             # Reuse cached arguments_json (performance optimization)
             self.invoke_async_funct(
-                "async_insert_update_tool_call",
+                module_name="ai_agent_core_engine",
+                class_name="AIAgentCoreEngine",
+                function_name="async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
                     "arguments": arguments_json,
@@ -646,13 +693,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "notes": log,
                 },
             )
-            return f"Function execution failed: {e}"
+            error_msg = f"Function execution failed: {e}"
+            return error_msg, Serializer.json_dumps(error_msg)
 
     def _update_conversation_history(
         self,
         function_call_data: Dict[str, Any],
         function_output: Any,
         input_messages: List[Dict[str, Any]],
+        serialized_output: Optional[str] = None,
     ) -> None:
         """
         Updates the conversation history with function call details and output.
@@ -660,13 +709,16 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param function_call_data: Dictionary containing function call metadata.
         :param function_output: Result returned from function execution.
         :param input_messages: List of messages to update with function details.
+        :param serialized_output: Pre-serialized output string to avoid re-serialization.
         """
         input_messages.append(function_call_data)
         input_messages.append(
             {
                 "type": "function_call_output",
                 "call_id": function_call_data["call_id"],
-                "output": Serializer.json_dumps(function_output),
+                "output": serialized_output
+                if serialized_output is not None
+                else Serializer.json_dumps(function_output),
             }
         )
 
@@ -727,6 +779,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     output,
                     input_messages,
                 )
+                input_messages = self._trim_messages_for_recursion(input_messages)
                 self.ask_model(input_messages)
                 return response.id
 
@@ -838,7 +891,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         reasoning_index = 0
         index = 0
 
-        stream_start_time = pendulum.now("UTC")
+        if self.enable_timeline_log:
+            stream_start_time = pendulum.now("UTC")
 
         for chunk in response_stream:
             if run_id is None:
@@ -1091,6 +1145,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                 f"[TIMELINE] T+{elapsed:.2f}ms: Starting recursive ask_model ({time_from_stream_start:.2f}ms after stream start)"
                             )
 
+                        input_messages = self._trim_messages_for_recursion(
+                            input_messages
+                        )
                         self.ask_model(
                             input_messages, queue=queue, stream_event=stream_event
                         )
@@ -1114,8 +1171,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     message_id = final_output_item.id
                     role = final_output_item.role
 
-        # Log start of post-processing
-        post_processing_start = pendulum.now("UTC")
+        if self.enable_timeline_log:
+            post_processing_start = pendulum.now("UTC")
 
         # Build final accumulated text from parts (performance optimization)
         final_accumulated_text = "".join(accumulated_text_parts)
@@ -1217,7 +1274,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             # Assign a filename to the BytesIO object
             content_io.name = kwargs["filename"]
         elif "file_uri" in kwargs:
-            content_io = BytesIO(httpx.get(kwargs["file_uri"]).content)
+            content_io = BytesIO(self.http_client.get(kwargs["file_uri"]).content)
             content_io.name = kwargs["filename"]
         else:
             raise Exception("No file content provided")
@@ -1247,7 +1304,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         metadata_url = (
             f"https://api.openai.com/v1/containers/{container_id}/files/{file_id}"
         )
-        metadata_response = requests.get(metadata_url, headers=headers)
+        metadata_response = self.http_client.get(metadata_url, headers=headers)
         metadata_response.raise_for_status()
         file = metadata_response.json()
 
@@ -1264,7 +1321,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         # Get file content if requested
         if "encoded_content" in kwargs and kwargs["encoded_content"]:
             content_url = f"{metadata_url}/content"
-            content_response = requests.get(content_url, headers=headers)
+            content_response = self.http_client.get(content_url, headers=headers)
             content_response.raise_for_status()
             content = content_response.content
             file_data["encoded_content"] = base64.b64encode(content).decode("utf-8")
