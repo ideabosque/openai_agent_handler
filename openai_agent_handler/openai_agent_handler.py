@@ -594,6 +594,23 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error(f"Error in handle_function_call: {e}")
             raise
 
+    def _record_function_call_start(self, function_call_data: Dict[str, Any]) -> None:
+        """
+        Records the start of a function call execution in the system.
+
+        :param function_call_data: Dictionary containing function call metadata.
+        """
+        self.invoke_async_funct(
+            module_name="ai_agent_core_engine",
+            class_name="AIAgentCoreEngine",
+            function_name="async_insert_update_tool_call",
+            **{
+                "tool_call_id": function_call_data["id"],
+                "tool_type": function_call_data["type"],
+                "name": function_call_data["name"],
+            },
+        )
+
     def _process_function_arguments(
         self, function_call_data: Dict[str, Any]
     ) -> Dict[str, Any]:
