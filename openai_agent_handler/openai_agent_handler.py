@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 import httpx
 import openai
 import pendulum
-import requests
 
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Debugger, Serializer
@@ -69,22 +68,23 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 http2=True,  # Enable HTTP/2 for better performance
             )
 
+            # Persist for reuse in file operations (insert_file, get_output_file)
+            self.http_client = http_client
+
             self.client = openai.OpenAI(
                 api_key=self.agent.get("configuration", {}).get("openai_api_key"),
                 http_client=http_client,
             )
 
             if "enabled_tools" in self.agent["configuration"]:
-                # Add tools if available - matching example.py structure
-                enabled_tools = []
+                # Filter tools using set-based membership for O(1) lookups
+                enabled_set = set(self.agent["configuration"]["enabled_tools"])
                 if "tools" in self.agent["configuration"]:
-                    for tool in self.agent["configuration"]["tools"]:
-                        if tool["name"] not in self.agent["configuration"].get(
-                            "enabled_tools", []
-                        ):
-                            continue
-                        enabled_tools.append(tool)
-                self.agent["configuration"]["tools"] = enabled_tools
+                    self.agent["configuration"]["tools"] = [
+                        tool
+                        for tool in self.agent["configuration"]["tools"]
+                        if tool["name"] in enabled_set
+                    ]
 
             # Build model settings with type conversions (performance optimization)
             self.model_setting = {"instructions": self.agent["instructions"]}
@@ -124,8 +124,58 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             "Reasoning events will be skipped during streaming."
                         )
 
+            # Build shell tool with skill references if skills are configured.
+            # Supports "local" (local shell execution) and "container_auto" (hosted).
+            # Inline skills are not supported — use skill_reference with skill_id.
+            if "skills" in self.model_setting:
+                skills = self.model_setting.pop("skills")
+                env_type = self.model_setting.pop("skills_environment", "container_auto")
+
+                if not isinstance(skills, list):
+                    if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                        self.logger.warning(
+                            "Skills configuration should be a list. "
+                            "Skills features may not work correctly."
+                        )
+                elif env_type not in ("local", "container_auto"):
+                    if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                        self.logger.warning(
+                            f"Unknown skills_environment '{env_type}'. "
+                            "Must be 'local' or 'container_auto'. "
+                            "Defaulting to 'container_auto'."
+                        )
+                    env_type = "container_auto"
+                else:
+                    # Build skill_reference entries (drop any that lack skill_id)
+                    skill_refs = []
+                    for entry in skills:
+                        if not isinstance(entry, dict) or "skill_id" not in entry:
+                            if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                                self.logger.warning(
+                                    f"Skipping invalid skill entry (missing skill_id): {entry}"
+                                )
+                            continue
+                        ref = {"type": "skill_reference", "skill_id": entry["skill_id"]}
+                        if "version" in entry:
+                            ref["version"] = entry["version"]
+                        skill_refs.append(ref)
+
+                    if skill_refs:
+                        shell_tool = {
+                            "type": "shell",
+                            "environment": {
+                                "type": env_type,
+                                "skills": skill_refs,
+                            },
+                        }
+                        self.model_setting.setdefault("tools", []).append(shell_tool)
+
             # Enable/disable timeline logging (default: enabled for backward compatibility)
             self.enable_timeline_log = setting.get("enable_timeline_log", False)
+
+            # Cached code_interpreter tool reference (invalidated on model_setting update)
+            self._cached_code_interpreter_tool = None
+            self._code_interpreter_cache_valid = False
         except Exception as e:
             Debugger.info(variable=e, stage=f"{__name__}:__init__")
             raise
@@ -191,13 +241,14 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :raises: Exception if API call fails or returns error.
         """
         try:
-            invoke_start = pendulum.now("UTC")
+            if self.enable_timeline_log:
+                invoke_start = pendulum.now("UTC")
+
             variables = dict(self.model_setting, **kwargs)
             result = self.client.responses.create(**variables)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                invoke_end = pendulum.now("UTC")
-                invoke_time = (invoke_end - invoke_start).total_seconds() * 1000
+                invoke_time = (pendulum.now("UTC") - invoke_start).total_seconds() * 1000
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: API call returned (took {invoke_time:.2f}ms)"
@@ -209,13 +260,13 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
 
-    # @Utility.performance_monitor.monitor_operation(operation_name="OpenAI")
+    @performance_monitor.monitor_operation(operation_name="OpenAI")
     def ask_model(
         self,
         input_messages: List[Dict[str, Any]],
         queue: Queue = None,
         stream_event: threading.Event = None,
-        input_files: List[str] = [],
+        input_files: Optional[List[Dict[str, Any]]] = None,
         model_setting: Dict[str, Any] = None,
     ) -> Optional[str]:
         """
@@ -228,8 +279,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :return: Response ID for non-streaming requests, None for streaming.
         :raises: Exception if request fails or client is not configured.
         """
-        # Track preparation time
-        ask_model_start = pendulum.now("UTC")
+        # Track preparation time (only when timeline logging is enabled)
+        if self.enable_timeline_log:
+            ask_model_start = pendulum.now("UTC")
 
         # Track recursion depth to identify top-level vs recursive calls
         if not hasattr(self, "_ask_model_depth"):
@@ -240,7 +292,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
 
         # Initialize global start time only on top-level ask_model call
         # Recursive calls will use the same start time for the entire run timeline
-        if is_top_level:
+        if is_top_level and self.enable_timeline_log:
             self._global_start_time = ask_model_start
 
             # Reset reasoning_summary for new conversation turn
@@ -268,30 +320,27 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 return None
 
             stream = True if queue is not None else False
+            input_files = input_files or []
 
             # Add model-specific settings if provided
             if model_setting:
                 self.model_setting.update(model_setting)
+                # Invalidate tool cache since tools may have changed
+                self._code_interpreter_cache_valid = False
 
             if input_files:
                 input_messages = self._process_input_files(input_files, input_messages)
 
             self._process_user_file_ids(input_messages[:-1])
 
-            # Clean up input messages to remove broken tool sequences (performance optimization)
-            cleanup_start = pendulum.now("UTC")
-            cleanup_end = pendulum.now("UTC")
-            cleanup_time = (cleanup_end - cleanup_start).total_seconds() * 1000
-
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
                 # Track total preparation time before API call
-                preparation_end = pendulum.now("UTC")
                 preparation_time = (
-                    preparation_end - ask_model_start
+                    pendulum.now("UTC") - ask_model_start
                 ).total_seconds() * 1000
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
-                    f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms, cleanup: {cleanup_time:.2f}ms)"
+                    f"[TIMELINE] T+{elapsed:.2f}ms: Preparation complete (took {preparation_time:.2f}ms)"
                 )
 
             response = self.invoke_model(
@@ -334,16 +383,22 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     )
                 self._global_start_time = None
 
+    def _get_code_interpreter_tool(self) -> Optional[Dict[str, Any]]:
+        """Return cached code_interpreter tool reference, scanning only on cache miss."""
+        if not self._code_interpreter_cache_valid:
+            self._cached_code_interpreter_tool = next(
+                (
+                    tool
+                    for tool in self.model_setting.get("tools", [])
+                    if tool.get("type") == "code_interpreter"
+                ),
+                None,
+            )
+            self._code_interpreter_cache_valid = True
+        return self._cached_code_interpreter_tool
+
     def _attach_files_into_code_interpreter(self, file_ids) -> bool:
-        # Find existing code_interpreter tool if it exists
-        code_interpreter_tool = next(
-            (
-                tool
-                for tool in self.model_setting.get("tools", [])
-                if tool.get("type") == "code_interpreter"
-            ),
-            None,
-        )
+        code_interpreter_tool = self._get_code_interpreter_tool()
 
         if not code_interpreter_tool:
             return False
@@ -354,12 +409,37 @@ class OpenAIEventHandler(AIAgentEventHandler):
         if "file_ids" not in code_interpreter_tool["container"]:
             code_interpreter_tool["container"]["file_ids"] = []
 
-        # Append file_ids to existing code_interpreter tool and ensure uniqueness
-        code_interpreter_tool["container"]["file_ids"] = list(
-            set(code_interpreter_tool["container"]["file_ids"] + file_ids)
-        )
+        # Append file_ids using incremental set-based dedup (avoids list→set→list rebuild)
+        existing = set(code_interpreter_tool["container"]["file_ids"])
+        for fid in file_ids:
+            if fid not in existing:
+                existing.add(fid)
+                code_interpreter_tool["container"]["file_ids"].append(fid)
 
         return True
+
+    def _trim_messages_for_recursion(
+        self, input_messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Apply sliding window to prevent unbounded message growth during recursive calls.
+        Preserves function_call / function_call_output pair integrity at the trim boundary.
+
+        Uses the agent's num_of_messages setting as the window size.
+        If not set or messages are within the limit, returns the list unchanged.
+        """
+        max_messages = self.agent.get("num_of_messages")
+        if not max_messages or len(input_messages) <= max_messages:
+            return input_messages
+
+        # Trim from the beginning, keeping the most recent messages
+        trimmed = input_messages[-max_messages:]
+
+        # If we split a function_call_output from its function_call, drop the orphan
+        if trimmed and trimmed[0].get("type") == "function_call_output":
+            trimmed = trimmed[1:]
+
+        return trimmed
 
     def _process_input_files(
         self, input_files: List[Dict[str, Any]], input_messages: List[Dict[str, Any]]
@@ -461,8 +541,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :raises: ValueError if tool_call is invalid.
                 Exception if function execution fails.
         """
-        # Track function call timing
-        function_call_start = pendulum.now("UTC")
+        # Track function call timing (only when timeline logging is enabled)
+        if self.enable_timeline_log:
+            function_call_start = pendulum.now("UTC")
 
         # Validate tool call
         if not tool_call or not hasattr(tool_call, "id"):
@@ -479,13 +560,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "status": tool_call.status,
             }
 
-            # Record initial function call (with conditional logging)
-            if self.logger.isEnabledFor(logging.INFO):
-                self.logger.info(
-                    f"[handle_function_call] Starting function call recording for {function_call_data['name']}"
-                )
-            self._record_function_call_start(function_call_data)
-
             # Parse and process arguments
             if self.logger.isEnabledFor(logging.INFO):
                 self.logger.info(
@@ -498,7 +572,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.info(
                     f"[handle_function_call] Executing function {function_call_data['name']} with arguments {arguments}"
                 )
-            function_output = self._execute_function(function_call_data, arguments)
+            function_output, serialized_output = self._execute_function(
+                function_call_data, arguments
+            )
 
             # Update conversation history
             if self.logger.isEnabledFor(logging.INFO):
@@ -506,7 +582,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     f"[handle_function_call][{function_call_data['name']}] Updating conversation history"
                 )
             self._update_conversation_history(
-                function_call_data, function_output, input_messages
+                function_call_data, function_output, input_messages, serialized_output
             )
 
             # Continue conversation
@@ -630,24 +706,29 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 function_name="async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
+                    "tool_type": function_call_data["type"],
+                    "name": function_call_data["name"],
                     "arguments": arguments_json,
                     "status": "in_progress",
                 },
             )
 
-            # Track actual function execution time
-            function_exec_start = pendulum.now("UTC")
+            if self.enable_timeline_log:
+                function_exec_start = pendulum.now("UTC")
+
             function_output = agent_function(**arguments)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                function_exec_end = pendulum.now("UTC")
                 function_exec_time = (
-                    function_exec_end - function_exec_start
+                    pendulum.now("UTC") - function_exec_start
                 ).total_seconds() * 1000
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: Function '{function_call_data['name']}' executed (took {function_exec_time:.2f}ms)"
                 )
+
+            # Serialize once and reuse in both DB write and conversation history
+            serialized_output = Serializer.json_dumps(function_output)
 
             self.invoke_async_funct(
                 module_name="ai_agent_core_engine",
@@ -655,11 +736,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 function_name="async_insert_update_tool_call",
                 **{
                     "tool_call_id": function_call_data["id"],
-                    "content": Serializer.json_dumps(function_output),
+                    "content": serialized_output,
                     "status": "completed",
                 },
             )
-            return function_output
+            return function_output, serialized_output
 
         except Exception as e:
             log = traceback.format_exc()
@@ -675,13 +756,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     "notes": log,
                 },
             )
-            return f"Function execution failed: {e}"
+            error_msg = f"Function execution failed: {e}"
+            return error_msg, Serializer.json_dumps(error_msg)
 
     def _update_conversation_history(
         self,
         function_call_data: Dict[str, Any],
         function_output: Any,
         input_messages: List[Dict[str, Any]],
+        serialized_output: Optional[str] = None,
     ) -> None:
         """
         Updates the conversation history with function call details and output.
@@ -689,13 +772,16 @@ class OpenAIEventHandler(AIAgentEventHandler):
         :param function_call_data: Dictionary containing function call metadata.
         :param function_output: Result returned from function execution.
         :param input_messages: List of messages to update with function details.
+        :param serialized_output: Pre-serialized output string to avoid re-serialization.
         """
         input_messages.append(function_call_data)
         input_messages.append(
             {
                 "type": "function_call_output",
                 "call_id": function_call_data["call_id"],
-                "output": Serializer.json_dumps(function_output),
+                "output": serialized_output
+                if serialized_output is not None
+                else Serializer.json_dumps(function_output),
             }
         )
 
@@ -756,6 +842,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     output,
                     input_messages,
                 )
+                input_messages = self._trim_messages_for_recursion(input_messages)
                 self.ask_model(input_messages)
                 return response.id
 
@@ -827,7 +914,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         queue: Queue = None,
         stream_event: threading.Event = None,
         retry_count: int = 0,
-    ) -> str:
+    ) -> str | None:
         """
         Processes streaming responses from the model chunk by chunk.
 
@@ -846,14 +933,15 @@ class OpenAIEventHandler(AIAgentEventHandler):
         run_id = None
         message_id = None
         role = None
-        accumulated_partial_reasoning_text = ""
+        # Use list-based accumulation to avoid O(n^2) string concatenation
+        accumulated_partial_reasoning_parts = []
         # Accumulate complete reasoning for the current block
         accumulated_reasoning_block = []
         # Use list for efficient string concatenation (performance optimization)
         accumulated_text_parts = []
         output_files = []
-        accumulated_partial_json = ""
-        accumulated_partial_text = ""
+        accumulated_partial_json_parts = []
+        accumulated_partial_text_parts = []
         received_any_content = False
         # Use cached output format type (performance optimization)
         output_format = self.output_format_type
@@ -866,7 +954,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
         reasoning_index = 0
         index = 0
 
-        stream_start_time = pendulum.now("UTC")
+        if self.enable_timeline_log:
+            stream_start_time = pendulum.now("UTC")
 
         for chunk in response_stream:
             if run_id is None:
@@ -905,32 +994,36 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                 f"[TIMELINE] T+{elapsed:.2f}ms: Reasoning added"
                             )
                     elif chunk.type == "response.reasoning_summary_text.delta":
-                        print(chunk.delta, end="", flush=True)
+                        if self.logger.isEnabledFor(logging.DEBUG):
+                            print(chunk.delta, end="", flush=True)
 
                         # Accumulate for final summary
                         accumulated_reasoning_block.append(chunk.delta)
 
-                        accumulated_partial_reasoning_text += chunk.delta
+                        accumulated_partial_reasoning_parts.append(chunk.delta)
                         # Check if text contains XML-style tags and update format
-                        reasoning_index, accumulated_partial_reasoning_text = (
-                            self.process_text_content(
-                                reasoning_index,
-                                accumulated_partial_reasoning_text,
-                                output_format,
-                                suffix=f"rs#{reasoning_no}",
-                            )
+                        reasoning_index, remaining = self.process_text_content(
+                            reasoning_index,
+                            "".join(accumulated_partial_reasoning_parts),
+                            output_format,
+                            suffix=f"rs#{reasoning_no}",
+                        )
+                        accumulated_partial_reasoning_parts = (
+                            [remaining] if remaining else []
                         )
 
                     elif chunk.type == "response.reasoning_summary_text.done":
                         # Send message completion signal to WebSocket server
-                        if len(accumulated_partial_reasoning_text) > 0:
+                        if accumulated_partial_reasoning_parts:
                             self.send_data_to_stream(
                                 index=reasoning_index,
                                 data_format=output_format,
-                                chunk_delta=accumulated_partial_reasoning_text,
+                                chunk_delta="".join(
+                                    accumulated_partial_reasoning_parts
+                                ),
                                 suffix=f"rs#{reasoning_no}",
                             )
-                            accumulated_partial_reasoning_text = ""
+                            accumulated_partial_reasoning_parts = []
                             # reasoning_index += 1
                     elif chunk.type == "response.reasoning_summary_part.done":
                         # Save accumulated reasoning text to final_output
@@ -996,7 +1089,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
             elif chunk.type == "response.output_text.delta":
                 received_any_content = True
 
-                print(chunk.delta, end="", flush=True)
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    print(chunk.delta, end="", flush=True)
 
                 # Accumulate in list for efficient concatenation (performance optimization)
                 accumulated_text_parts.append(chunk.delta)
@@ -1005,32 +1099,38 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 # when complete JSON objects are detected. This ensures valid JSON
                 # is sent to the WebSocket server.
                 if output_format in ["json_object", "json_schema"]:
-                    accumulated_partial_json += chunk.delta
+                    accumulated_partial_json_parts.append(chunk.delta)
                     # Temporarily build accumulated_text for processing
                     temp_accumulated_text = "".join(accumulated_text_parts)
-                    index, temp_accumulated_text, accumulated_partial_json = (
+                    index, temp_accumulated_text, remaining_json = (
                         self.process_and_send_json(
                             index,
                             temp_accumulated_text,
-                            accumulated_partial_json,
+                            "".join(accumulated_partial_json_parts),
                             output_format,
                         )
                     )
+                    accumulated_partial_json_parts = (
+                        [remaining_json] if remaining_json else []
+                    )
                 else:
-                    accumulated_partial_text += chunk.delta
+                    accumulated_partial_text_parts.append(chunk.delta)
                     # Check if text contains XML-style tags and update format
-                    index, accumulated_partial_text = self.process_text_content(
-                        index, accumulated_partial_text, output_format
+                    index, remaining_text = self.process_text_content(
+                        index, "".join(accumulated_partial_text_parts), output_format
+                    )
+                    accumulated_partial_text_parts = (
+                        [remaining_text] if remaining_text else []
                     )
             elif chunk.type == "response.output_text.done":
                 # Send message completion signal to WebSocket server
-                if len(accumulated_partial_text) > 0:
+                if accumulated_partial_text_parts:
                     self.send_data_to_stream(
                         index=index,
                         data_format=output_format,
-                        chunk_delta=accumulated_partial_text,
+                        chunk_delta="".join(accumulated_partial_text_parts),
                     )
-                    accumulated_partial_text = ""
+                    accumulated_partial_text_parts = []
                     index += 1
             elif chunk.type == "response.content_part.done":
                 # Send message completion signal to WebSocket server
@@ -1055,45 +1155,50 @@ class OpenAIEventHandler(AIAgentEventHandler):
                         f"[TIMELINE] T+{elapsed:.2f}ms: Stream completed, run_id={chunk.response.id} (took {time_to_completion:.2f}ms from stream start)"
                     )
 
-                # Process any final output objects in chunk.response
+                # Single-pass processing of final output objects
                 if hasattr(chunk.response, "output") and chunk.response.output:
-                    # Check if output is a function call or message
-                    if any(
-                        output.type == "function_call"
-                        for output in chunk.response.output
-                        if hasattr(output, "type")
-                    ):
-                        reasoning_item = None
-                        for output in chunk.response.output:
-                            # Handle reasoning - store it for function call context
-                            # Note: Reasoning summary is already captured during streaming
-                            # at response.reasoning_summary_part.done event (lines 882-907)
-                            if output.type == "reasoning":
-                                reasoning_item = {
-                                    "type": "reasoning",
-                                    "id": output.id,
-                                    "summary": output.summary,
-                                }
-                                continue
+                    has_function_call = False
+                    reasoning_item = None
+                    last_message_output = None
 
-                            # Handle function_call - add reasoning if exists, then process
-                            if output.type == "function_call":
-                                if reasoning_item is not None:
-                                    input_messages.append(reasoning_item)
-                                reasoning_item = None
+                    for output in chunk.response.output:
+                        output_type = getattr(output, "type", None)
 
-                                input_messages = self.handle_function_call(
-                                    output, input_messages
-                                )
-                                continue
+                        if output_type == "mcp_approval_request":
+                            raise Exception(
+                                "MCP Approval Request is not currently supported"
+                            )
 
-                            # For all other types, reset reasoning
+                        if output_type == "reasoning":
+                            reasoning_item = {
+                                "type": "reasoning",
+                                "id": output.id,
+                                "summary": output.summary,
+                            }
+                            continue
+
+                        if output_type == "function_call":
+                            has_function_call = True
+                            if reasoning_item is not None:
+                                input_messages.append(reasoning_item)
                             reasoning_item = None
 
+                            input_messages = self.handle_function_call(
+                                output, input_messages
+                            )
+                            continue
+
+                        # Track last message output for metadata extraction
+                        if output_type == "message":
+                            last_message_output = output
+
+                        # Reset reasoning for non-function-call, non-reasoning types
+                        reasoning_item = None
+
+                    if has_function_call:
                         if self.enable_timeline_log and self.logger.isEnabledFor(
                             logging.INFO
                         ):
-                            # Log time before recursive ask_model call after function execution
                             recursive_call_start = pendulum.now("UTC")
                             time_from_stream_start = (
                                 recursive_call_start - stream_start_time
@@ -1103,23 +1208,19 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                 f"[TIMELINE] T+{elapsed:.2f}ms: Starting recursive ask_model ({time_from_stream_start:.2f}ms after stream start)"
                             )
 
+                        input_messages = self._trim_messages_for_recursion(
+                            input_messages
+                        )
                         self.ask_model(
                             input_messages, queue=queue, stream_event=stream_event
                         )
                         return run_id
 
-                    if any(
-                        output.type == "mcp_approval_request"
-                        for output in chunk.response.output
-                        if hasattr(output, "type")
-                    ):
-                        raise Exception(
-                            "MCP Approval Request is not currently supported"
-                        )
-
-                    if hasattr(chunk.response.output[-1], "content"):
+                    # Extract metadata from last output item
+                    final_output_item = last_message_output or chunk.response.output[-1]
+                    if hasattr(final_output_item, "content"):
                         for ann in getattr(
-                            chunk.response.output[-1].content[-1], "annotations", []
+                            final_output_item.content[-1], "annotations", []
                         ):
                             if ann.type == "container_file_citation":
                                 output_files.append(
@@ -1130,11 +1231,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
                                     }
                                 )
 
-                    message_id = chunk.response.output[-1].id
-                    role = chunk.response.output[-1].role
+                    message_id = final_output_item.id
+                    role = final_output_item.role
 
-        # Log start of post-processing
-        post_processing_start = pendulum.now("UTC")
+        if self.enable_timeline_log:
+            post_processing_start = pendulum.now("UTC")
 
         # Build final accumulated text from parts (performance optimization)
         final_accumulated_text = "".join(accumulated_text_parts)
@@ -1236,7 +1337,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             # Assign a filename to the BytesIO object
             content_io.name = kwargs["filename"]
         elif "file_uri" in kwargs:
-            content_io = BytesIO(httpx.get(kwargs["file_uri"]).content)
+            content_io = BytesIO(self.http_client.get(kwargs["file_uri"]).content)
             content_io.name = kwargs["filename"]
         else:
             raise Exception("No file content provided")
@@ -1266,7 +1367,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         metadata_url = (
             f"https://api.openai.com/v1/containers/{container_id}/files/{file_id}"
         )
-        metadata_response = requests.get(metadata_url, headers=headers)
+        metadata_response = self.http_client.get(metadata_url, headers=headers)
         metadata_response.raise_for_status()
         file = metadata_response.json()
 
@@ -1283,9 +1384,334 @@ class OpenAIEventHandler(AIAgentEventHandler):
         # Get file content if requested
         if "encoded_content" in kwargs and kwargs["encoded_content"]:
             content_url = f"{metadata_url}/content"
-            content_response = requests.get(content_url, headers=headers)
+            content_response = self.http_client.get(content_url, headers=headers)
             content_response.raise_for_status()
             content = content_response.content
             file_data["encoded_content"] = base64.b64encode(content).decode("utf-8")
 
         return file_data
+
+    # ----------------------------
+    # Skill Management Methods
+    # ----------------------------
+
+    def list_skills(
+        self, limit: int = 20, after: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        List all available skills.
+
+        Args:
+            limit: Maximum number of skills to return (default 20)
+            after: Cursor for pagination
+
+        Returns:
+            Dictionary containing:
+                - data: List of skill objects
+                - has_more: Boolean indicating if more results exist
+                - first_id: ID of first skill in results
+                - last_id: ID of last skill in results
+        """
+        params = {"limit": limit}
+        if after:
+            params["after"] = after
+
+        skills = self.client.skills.list(**params)
+
+        return {
+            "data": [
+                {
+                    "id": skill.id,
+                    "name": skill.name,
+                    "description": skill.description,
+                    "default_version": skill.default_version,
+                    "latest_version": skill.latest_version,
+                    "created_at": skill.created_at,
+                }
+                for skill in skills.data
+            ],
+            "has_more": skills.has_more,
+            "first_id": skills.first_id,
+            "last_id": skills.last_id,
+        }
+
+    def get_skill(self, skill_id: str) -> Dict[str, Any]:
+        """
+        Retrieve details about a specific skill.
+
+        Args:
+            skill_id: The ID of the skill to retrieve
+
+        Returns:
+            Dictionary containing skill details
+        """
+        skill = self.client.skills.retrieve(skill_id)
+
+        return {
+            "id": skill.id,
+            "name": skill.name,
+            "description": skill.description,
+            "default_version": skill.default_version,
+            "latest_version": skill.latest_version,
+            "created_at": skill.created_at,
+        }
+
+    def create_skill(
+        self,
+        name: str,
+        files: List[Dict[str, Any]],
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a new custom skill.
+
+        Args:
+            name: Name for the skill
+            files: List of file dictionaries with keys:
+                - filename: Name of the file
+                - encoded_content: Base64-encoded content, or
+                - content: Raw bytes content
+                - mime_type: Optional MIME type
+            description: Optional description for the skill
+
+        Returns:
+            Dictionary containing created skill details
+        """
+        file_tuples = []
+        for file_dict in files:
+            if "encoded_content" in file_dict:
+                content = base64.b64decode(file_dict["encoded_content"])
+            else:
+                content = file_dict.get("content", b"")
+
+            file_tuple = (
+                file_dict["filename"],
+                BytesIO(content) if isinstance(content, bytes) else content,
+            )
+            if "mime_type" in file_dict:
+                file_tuple = file_tuple + (file_dict["mime_type"],)
+            file_tuples.append(file_tuple)
+
+        params = {"name": name, "files": file_tuples}
+        if description:
+            params["description"] = description
+
+        skill = self.client.skills.create(**params)
+
+        return {
+            "id": skill.id,
+            "name": skill.name,
+            "description": skill.description,
+            "default_version": skill.default_version,
+            "latest_version": skill.latest_version,
+            "created_at": skill.created_at,
+        }
+
+    def update_skill(self, skill_id: str, default_version: str) -> Dict[str, Any]:
+        """
+        Update the default version pointer for a skill.
+
+        Args:
+            skill_id: The ID of the skill to update
+            default_version: The version identifier to set as default
+
+        Returns:
+            Dictionary containing updated skill details
+        """
+        skill = self.client.skills.update(skill_id, default_version=default_version)
+
+        return {
+            "id": skill.id,
+            "name": skill.name,
+            "description": skill.description,
+            "default_version": skill.default_version,
+            "latest_version": skill.latest_version,
+            "created_at": skill.created_at,
+        }
+
+    def delete_skill(self, skill_id: str) -> Dict[str, Any]:
+        """
+        Delete a custom skill.
+
+        Args:
+            skill_id: The ID of the skill to delete
+
+        Returns:
+            Dictionary confirming deletion
+
+        Note:
+            All versions of the skill must be deleted before the skill can be deleted.
+        """
+        # First delete all versions
+        versions = self.client.skills.versions.list(skill_id)
+        for version in versions.data:
+            self.client.skills.versions.delete(version.version, skill_id=skill_id)
+
+        # Then delete the skill
+        self.client.skills.delete(skill_id)
+
+        return {"id": skill_id, "deleted": True}
+
+    def list_skill_versions(
+        self, skill_id: str, limit: int = 20, after: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        List all versions of a skill.
+
+        Args:
+            skill_id: The ID of the skill
+            limit: Maximum number of versions to return (default 20)
+            after: Cursor for pagination
+
+        Returns:
+            Dictionary containing:
+                - data: List of version objects
+                - has_more: Boolean indicating if more results exist
+        """
+        params = {"limit": limit}
+        if after:
+            params["after"] = after
+
+        versions = self.client.skills.versions.list(skill_id, **params)
+
+        return {
+            "data": [
+                {
+                    "id": version.id,
+                    "version": version.version,
+                    "name": version.name,
+                    "description": version.description,
+                    "skill_id": version.skill_id,
+                    "created_at": version.created_at,
+                }
+                for version in versions.data
+            ],
+            "has_more": versions.has_more,
+        }
+
+    def get_skill_version(self, skill_id: str, version: str) -> Dict[str, Any]:
+        """
+        Retrieve details about a specific skill version.
+
+        Args:
+            skill_id: The ID of the skill
+            version: The version identifier
+
+        Returns:
+            Dictionary containing version details
+        """
+        skill_version = self.client.skills.versions.retrieve(
+            version, skill_id=skill_id
+        )
+
+        return {
+            "id": skill_version.id,
+            "version": skill_version.version,
+            "name": skill_version.name,
+            "description": skill_version.description,
+            "skill_id": skill_version.skill_id,
+            "created_at": skill_version.created_at,
+        }
+
+    def create_skill_version(
+        self, skill_id: str, files: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Create a new immutable version of an existing skill.
+
+        Args:
+            skill_id: The ID of the skill to update
+            files: List of file dictionaries with keys:
+                - filename: Name of the file
+                - encoded_content: Base64-encoded content, or
+                - content: Raw bytes content
+                - mime_type: Optional MIME type
+
+        Returns:
+            Dictionary containing created version details
+        """
+        file_tuples = []
+        for file_dict in files:
+            if "encoded_content" in file_dict:
+                content = base64.b64decode(file_dict["encoded_content"])
+            else:
+                content = file_dict.get("content", b"")
+
+            file_tuple = (
+                file_dict["filename"],
+                BytesIO(content) if isinstance(content, bytes) else content,
+            )
+            if "mime_type" in file_dict:
+                file_tuple = file_tuple + (file_dict["mime_type"],)
+            file_tuples.append(file_tuple)
+
+        version = self.client.skills.versions.create(skill_id, files=file_tuples)
+
+        return {
+            "id": version.id,
+            "version": version.version,
+            "name": version.name,
+            "description": version.description,
+            "skill_id": version.skill_id,
+            "created_at": version.created_at,
+        }
+
+    def delete_skill_version(self, skill_id: str, version: str) -> Dict[str, Any]:
+        """
+        Delete a specific version of a skill.
+
+        Args:
+            skill_id: The ID of the skill
+            version: The version to delete
+
+        Returns:
+            Dictionary confirming deletion
+        """
+        self.client.skills.versions.delete(version, skill_id=skill_id)
+
+        return {"skill_id": skill_id, "version": version, "deleted": True}
+
+    def get_skill_content(self, skill_id: str) -> Dict[str, Any]:
+        """
+        Download the binary bundle for a skill.
+
+        Args:
+            skill_id: The ID of the skill
+
+        Returns:
+            Dictionary containing:
+                - skill_id: The skill ID
+                - encoded_content: Base64-encoded skill bundle
+        """
+        content = self.client.skills.content.retrieve(skill_id)
+
+        return {
+            "skill_id": skill_id,
+            "encoded_content": base64.b64encode(content).decode("utf-8"),
+        }
+
+    def get_skill_version_content(
+        self, skill_id: str, version: str
+    ) -> Dict[str, Any]:
+        """
+        Download the binary bundle for a specific skill version.
+
+        Args:
+            skill_id: The ID of the skill
+            version: The version identifier
+
+        Returns:
+            Dictionary containing:
+                - skill_id: The skill ID
+                - version: The version identifier
+                - encoded_content: Base64-encoded version bundle
+        """
+        content = self.client.skills.versions.content.retrieve(
+            version, skill_id=skill_id
+        )
+
+        return {
+            "skill_id": skill_id,
+            "version": version,
+            "encoded_content": base64.b64encode(content).decode("utf-8"),
+        }
