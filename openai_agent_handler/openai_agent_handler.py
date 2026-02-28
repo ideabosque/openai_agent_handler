@@ -124,6 +124,16 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             "Reasoning events will be skipped during streaming."
                         )
 
+            # Validate skills configuration if present
+            if "skills" in self.model_setting:
+                skills = self.model_setting["skills"]
+                if not isinstance(skills, list):
+                    if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                        self.logger.warning(
+                            "Skills configuration should be a list. "
+                            "Skills features may not work correctly."
+                        )
+
             # Enable/disable timeline logging (default: enabled for backward compatibility)
             self.enable_timeline_log = setting.get("enable_timeline_log", False)
 
@@ -1327,3 +1337,328 @@ class OpenAIEventHandler(AIAgentEventHandler):
             file_data["encoded_content"] = base64.b64encode(content).decode("utf-8")
 
         return file_data
+
+    # ----------------------------
+    # Skill Management Methods
+    # ----------------------------
+
+    def list_skills(
+        self, limit: int = 20, after: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        List all available skills.
+
+        Args:
+            limit: Maximum number of skills to return (default 20)
+            after: Cursor for pagination
+
+        Returns:
+            Dictionary containing:
+                - data: List of skill objects
+                - has_more: Boolean indicating if more results exist
+                - first_id: ID of first skill in results
+                - last_id: ID of last skill in results
+        """
+        params = {"limit": limit}
+        if after:
+            params["after"] = after
+
+        skills = self.client.skills.list(**params)
+
+        return {
+            "data": [
+                {
+                    "id": skill.id,
+                    "name": skill.name,
+                    "description": skill.description,
+                    "default_version": skill.default_version,
+                    "latest_version": skill.latest_version,
+                    "created_at": skill.created_at,
+                }
+                for skill in skills.data
+            ],
+            "has_more": skills.has_more,
+            "first_id": skills.first_id,
+            "last_id": skills.last_id,
+        }
+
+    def get_skill(self, skill_id: str) -> Dict[str, Any]:
+        """
+        Retrieve details about a specific skill.
+
+        Args:
+            skill_id: The ID of the skill to retrieve
+
+        Returns:
+            Dictionary containing skill details
+        """
+        skill = self.client.skills.retrieve(skill_id)
+
+        return {
+            "id": skill.id,
+            "name": skill.name,
+            "description": skill.description,
+            "default_version": skill.default_version,
+            "latest_version": skill.latest_version,
+            "created_at": skill.created_at,
+        }
+
+    def create_skill(
+        self,
+        name: str,
+        files: List[Dict[str, Any]],
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a new custom skill.
+
+        Args:
+            name: Name for the skill
+            files: List of file dictionaries with keys:
+                - filename: Name of the file
+                - encoded_content: Base64-encoded content, or
+                - content: Raw bytes content
+                - mime_type: Optional MIME type
+            description: Optional description for the skill
+
+        Returns:
+            Dictionary containing created skill details
+        """
+        file_tuples = []
+        for file_dict in files:
+            if "encoded_content" in file_dict:
+                content = base64.b64decode(file_dict["encoded_content"])
+            else:
+                content = file_dict.get("content", b"")
+
+            file_tuple = (
+                file_dict["filename"],
+                BytesIO(content) if isinstance(content, bytes) else content,
+            )
+            if "mime_type" in file_dict:
+                file_tuple = file_tuple + (file_dict["mime_type"],)
+            file_tuples.append(file_tuple)
+
+        params = {"name": name, "files": file_tuples}
+        if description:
+            params["description"] = description
+
+        skill = self.client.skills.create(**params)
+
+        return {
+            "id": skill.id,
+            "name": skill.name,
+            "description": skill.description,
+            "default_version": skill.default_version,
+            "latest_version": skill.latest_version,
+            "created_at": skill.created_at,
+        }
+
+    def update_skill(self, skill_id: str, default_version: str) -> Dict[str, Any]:
+        """
+        Update the default version pointer for a skill.
+
+        Args:
+            skill_id: The ID of the skill to update
+            default_version: The version identifier to set as default
+
+        Returns:
+            Dictionary containing updated skill details
+        """
+        skill = self.client.skills.update(skill_id, default_version=default_version)
+
+        return {
+            "id": skill.id,
+            "name": skill.name,
+            "description": skill.description,
+            "default_version": skill.default_version,
+            "latest_version": skill.latest_version,
+            "created_at": skill.created_at,
+        }
+
+    def delete_skill(self, skill_id: str) -> Dict[str, Any]:
+        """
+        Delete a custom skill.
+
+        Args:
+            skill_id: The ID of the skill to delete
+
+        Returns:
+            Dictionary confirming deletion
+
+        Note:
+            All versions of the skill must be deleted before the skill can be deleted.
+        """
+        # First delete all versions
+        versions = self.client.skills.versions.list(skill_id)
+        for version in versions.data:
+            self.client.skills.versions.delete(version.version, skill_id=skill_id)
+
+        # Then delete the skill
+        self.client.skills.delete(skill_id)
+
+        return {"id": skill_id, "deleted": True}
+
+    def list_skill_versions(
+        self, skill_id: str, limit: int = 20, after: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        List all versions of a skill.
+
+        Args:
+            skill_id: The ID of the skill
+            limit: Maximum number of versions to return (default 20)
+            after: Cursor for pagination
+
+        Returns:
+            Dictionary containing:
+                - data: List of version objects
+                - has_more: Boolean indicating if more results exist
+        """
+        params = {"limit": limit}
+        if after:
+            params["after"] = after
+
+        versions = self.client.skills.versions.list(skill_id, **params)
+
+        return {
+            "data": [
+                {
+                    "id": version.id,
+                    "version": version.version,
+                    "name": version.name,
+                    "description": version.description,
+                    "skill_id": version.skill_id,
+                    "created_at": version.created_at,
+                }
+                for version in versions.data
+            ],
+            "has_more": versions.has_more,
+        }
+
+    def get_skill_version(self, skill_id: str, version: str) -> Dict[str, Any]:
+        """
+        Retrieve details about a specific skill version.
+
+        Args:
+            skill_id: The ID of the skill
+            version: The version identifier
+
+        Returns:
+            Dictionary containing version details
+        """
+        skill_version = self.client.skills.versions.retrieve(
+            version, skill_id=skill_id
+        )
+
+        return {
+            "id": skill_version.id,
+            "version": skill_version.version,
+            "name": skill_version.name,
+            "description": skill_version.description,
+            "skill_id": skill_version.skill_id,
+            "created_at": skill_version.created_at,
+        }
+
+    def create_skill_version(
+        self, skill_id: str, files: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Create a new immutable version of an existing skill.
+
+        Args:
+            skill_id: The ID of the skill to update
+            files: List of file dictionaries with keys:
+                - filename: Name of the file
+                - encoded_content: Base64-encoded content, or
+                - content: Raw bytes content
+                - mime_type: Optional MIME type
+
+        Returns:
+            Dictionary containing created version details
+        """
+        file_tuples = []
+        for file_dict in files:
+            if "encoded_content" in file_dict:
+                content = base64.b64decode(file_dict["encoded_content"])
+            else:
+                content = file_dict.get("content", b"")
+
+            file_tuple = (
+                file_dict["filename"],
+                BytesIO(content) if isinstance(content, bytes) else content,
+            )
+            if "mime_type" in file_dict:
+                file_tuple = file_tuple + (file_dict["mime_type"],)
+            file_tuples.append(file_tuple)
+
+        version = self.client.skills.versions.create(skill_id, files=file_tuples)
+
+        return {
+            "id": version.id,
+            "version": version.version,
+            "name": version.name,
+            "description": version.description,
+            "skill_id": version.skill_id,
+            "created_at": version.created_at,
+        }
+
+    def delete_skill_version(self, skill_id: str, version: str) -> Dict[str, Any]:
+        """
+        Delete a specific version of a skill.
+
+        Args:
+            skill_id: The ID of the skill
+            version: The version to delete
+
+        Returns:
+            Dictionary confirming deletion
+        """
+        self.client.skills.versions.delete(version, skill_id=skill_id)
+
+        return {"skill_id": skill_id, "version": version, "deleted": True}
+
+    def get_skill_content(self, skill_id: str) -> Dict[str, Any]:
+        """
+        Download the binary bundle for a skill.
+
+        Args:
+            skill_id: The ID of the skill
+
+        Returns:
+            Dictionary containing:
+                - skill_id: The skill ID
+                - encoded_content: Base64-encoded skill bundle
+        """
+        content = self.client.skills.content.retrieve(skill_id)
+
+        return {
+            "skill_id": skill_id,
+            "encoded_content": base64.b64encode(content).decode("utf-8"),
+        }
+
+    def get_skill_version_content(
+        self, skill_id: str, version: str
+    ) -> Dict[str, Any]:
+        """
+        Download the binary bundle for a specific skill version.
+
+        Args:
+            skill_id: The ID of the skill
+            version: The version identifier
+
+        Returns:
+            Dictionary containing:
+                - skill_id: The skill ID
+                - version: The version identifier
+                - encoded_content: Base64-encoded version bundle
+        """
+        content = self.client.skills.versions.content.retrieve(
+            version, skill_id=skill_id
+        )
+
+        return {
+            "skill_id": skill_id,
+            "version": version,
+            "encoded_content": base64.b64encode(content).decode("utf-8"),
+        }
