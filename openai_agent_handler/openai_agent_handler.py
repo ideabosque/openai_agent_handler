@@ -124,15 +124,51 @@ class OpenAIEventHandler(AIAgentEventHandler):
                             "Reasoning events will be skipped during streaming."
                         )
 
-            # Validate skills configuration if present
+            # Build shell tool with skill references if skills are configured.
+            # Supports "local" (local shell execution) and "container_auto" (hosted).
+            # Inline skills are not supported — use skill_reference with skill_id.
             if "skills" in self.model_setting:
-                skills = self.model_setting["skills"]
+                skills = self.model_setting.pop("skills")
+                env_type = self.model_setting.pop("skills_environment", "container_auto")
+
                 if not isinstance(skills, list):
                     if self.logger and self.logger.isEnabledFor(logging.WARNING):
                         self.logger.warning(
                             "Skills configuration should be a list. "
                             "Skills features may not work correctly."
                         )
+                elif env_type not in ("local", "container_auto"):
+                    if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                        self.logger.warning(
+                            f"Unknown skills_environment '{env_type}'. "
+                            "Must be 'local' or 'container_auto'. "
+                            "Defaulting to 'container_auto'."
+                        )
+                    env_type = "container_auto"
+                else:
+                    # Build skill_reference entries (drop any that lack skill_id)
+                    skill_refs = []
+                    for entry in skills:
+                        if not isinstance(entry, dict) or "skill_id" not in entry:
+                            if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                                self.logger.warning(
+                                    f"Skipping invalid skill entry (missing skill_id): {entry}"
+                                )
+                            continue
+                        ref = {"type": "skill_reference", "skill_id": entry["skill_id"]}
+                        if "version" in entry:
+                            ref["version"] = entry["version"]
+                        skill_refs.append(ref)
+
+                    if skill_refs:
+                        shell_tool = {
+                            "type": "shell",
+                            "environment": {
+                                "type": env_type,
+                                "skills": skill_refs,
+                            },
+                        }
+                        self.model_setting.setdefault("tools", []).append(shell_tool)
 
             # Enable/disable timeline logging (default: enabled for backward compatibility)
             self.enable_timeline_log = setting.get("enable_timeline_log", False)
