@@ -1,29 +1,22 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": true,
+    "title": "OpenAI Configuration Schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "model",
+        "openai_api_key"
+    ],
     "definitions": {
         "paramSchema": {
+            "type": "object",
             "additionalProperties": true,
+            "required": [
+                "type"
+            ],
             "properties": {
-                "description": {
-                    "type": "string"
-                },
-                "items": {
-                    "$ref": "#/definitions/paramSchema"
-                },
-                "properties": {
-                    "additionalProperties": {
-                        "$ref": "#/definitions/paramSchema"
-                    },
-                    "type": "object"
-                },
-                "required": {
-                    "items": {
-                        "type": "string"
-                    },
-                    "type": "array"
-                },
                 "type": {
+                    "type": "string",
                     "enum": [
                         "string",
                         "number",
@@ -31,159 +24,195 @@
                         "boolean",
                         "object",
                         "array"
-                    ],
+                    ]
+                },
+                "description": {
                     "type": "string"
-                }
-            },
-            "required": [
-                "type"
-            ],
-            "type": "object"
-        },
-        "toolParameters": {
-            "additionalProperties": true,
-            "properties": {
+                },
                 "properties": {
+                    "type": "object",
                     "additionalProperties": {
                         "$ref": "#/definitions/paramSchema"
-                    },
-                    "type": "object"
+                    }
+                },
+                "items": {
+                    "$ref": "#/definitions/paramSchema"
                 },
                 "required": {
+                    "type": "array",
                     "items": {
                         "type": "string"
-                    },
-                    "type": "array"
-                },
-                "type": {
-                    "const": "object"
+                    }
                 }
-            },
+            }
+        },
+        "toolParameters": {
+            "type": "object",
+            "additionalProperties": false,
             "required": [
                 "type",
-                "properties",
-                "required"
+                "properties"
             ],
-            "type": "object"
+            "properties": {
+                "type": {
+                    "const": "object"
+                },
+                "properties": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/paramSchema"
+                    }
+                },
+                "required": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
         }
     },
     "properties": {
-        "max_output_tokens": {
-            "description": "Hard cap on tokens in the model’s reply.",
-            "minimum": 1,
-            "type": "integer"
-        },
         "model": {
-            "description": "ID of the model that will generate the response (e.g. “gpt-4o” or “gpt-4.1”).",
-            "type": "string"
+            "type": "string",
+            "description": "ID of the model that will generate the response (e.g., gpt-4.1, gpt-4o, gpt-5)."
         },
         "openai_api_key": {
-            "description": "The API Key of OpenAI.",
-            "type": "string"
+            "type": "string",
+            "description": "The API Key of OpenAI."
+        },
+        "max_output_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Hard cap on tokens in the model’s reply."
+        },
+        "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2,
+            "default": 0.8,
+            "description": "Sampling temperature; higher values increase randomness."
         },
         "reasoning": {
+            "type": "object",
             "additionalProperties": false,
-            "description": "Hints that guide how much deliberation the model should spend.",
+            "description": "Controls model reasoning effort.",
             "properties": {
                 "effort": {
+                    "type": "string",
                     "enum": [
                         "low",
                         "medium",
                         "high"
-                    ],
-                    "type": "string"
+                    ]
                 },
                 "summary": {
+                    "type": "string",
                     "enum": [
                         "auto",
                         "required",
                         "none"
-                    ],
-                    "type": "string"
+                    ]
                 }
-            },
-            "type": "object"
-        },
-        "temperature": {
-            "default": 0.8,
-            "description": "Sampling temperature; higher values increase randomness.",
-            "maximum": 1,
-            "minimum": 0,
-            "type": "number"
+            }
         },
         "text": {
+            "type": "object",
             "additionalProperties": false,
-            "description": "Controls structured-output formats such as JSON-Schema validation.",
+            "description": "Controls structured output formatting.",
             "properties": {
                 "format": {
+                    "type": "object",
                     "additionalProperties": false,
+                    "required": [
+                        "type"
+                    ],
                     "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": [
+                                "json_schema",
+                                "json_object",
+                                "text"
+                            ]
+                        },
                         "name": {
                             "type": "string"
                         },
                         "schema": {
                             "type": "object"
-                        },
-                        "type": {
-                            "enum": [
-                                "json_schema",
-                                "json_object",
-                                "text"
-                            ],
-                            "type": "string"
                         }
-                    },
-                    "required": [
-                        "type"
-                    ],
-                    "type": "object"
+                    }
                 }
-            },
-            "type": "object"
+            }
         },
         "tools": {
-            "description": "Optional tool declarations (functions, code-interpreter, built-in `web_search_preview`, etc.).",
+            "type": "array",
+            "description": "Optional tool declarations compatible with OpenAI Responses API.",
             "items": {
-                "additionalProperties": true,
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                    "type"
+                ],
                 "properties": {
-                    "description": {
-                        "type": "string"
-                    },
-                    "name": {
-                        "type": "string"
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "function",
+                            "code_interpreter",
+                            "web_search",
+                            "web_search_preview"
+                        ]
                     },
                     "parameters": {
                         "$ref": "#/definitions/toolParameters"
                     },
-                    "type": {
+                    "user_location": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "Optional approximate user location for localized search.",
+                        "properties": {
+                            "type": {
+                                "const": "approximate"
+                            },
+                            "city": {
+                                "type": "string"
+                            },
+                            "region": {
+                                "type": "string"
+                            },
+                            "country": {
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "type"
+                        ]
+                    },
+                    "search_context_size": {
+                        "type": "string",
                         "enum": [
-                            "function",
-                            "code_interpreter",
-                            "web_search_preview"
+                            "low",
+                            "medium",
+                            "high"
                         ],
-                        "type": "string"
+                        "description": "Amount of web context retrieved."
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "Optional filtering configuration.",
+                        "properties": {
+                            "allowed_domains": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     }
-                },
-                "required": [
-                    "type",
-                    "name"
-                ],
-                "type": "object"
-            },
-            "type": "array"
-        },
-        "top_p": {
-            "default": 1,
-            "description": "Nucleus-sampling parameter.",
-            "maximum": 1,
-            "minimum": 0,
-            "type": "number"
+                }
+            }
         }
-    },
-    "required": [
-        "model",
-        "openai_api_key"
-    ],
-    "title": "OpenAI Configuration Schema",
-    "type": "object"
+    }
 }
