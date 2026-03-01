@@ -177,3 +177,5 @@ cython_debug/
 tests/
 .zed
 .claude/
+AGENTS.md
+CLAUDE.md
