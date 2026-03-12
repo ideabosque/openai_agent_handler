@@ -16,10 +16,10 @@ from typing import Any, Dict, List, Optional
 import httpx
 import openai
 import pendulum
-
 from ai_agent_handler import AIAgentEventHandler
 from silvaengine_utility import Debugger, Serializer
-from silvaengine_utility.performance_monitor import performance_monitor
+
+# from silvaengine_utility.performance_monitor import performance_monitor
 
 
 # ----------------------------
@@ -129,7 +129,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             # Inline skills are not supported — use skill_reference with skill_id.
             if "skills" in self.model_setting:
                 skills = self.model_setting.pop("skills")
-                env_type = self.model_setting.pop("skills_environment", "container_auto")
+                env_type = self.model_setting.pop(
+                    "skills_environment", "container_auto"
+                )
 
                 if not isinstance(skills, list):
                     if self.logger and self.logger.isEnabledFor(logging.WARNING):
@@ -150,7 +152,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     skill_refs = []
                     for entry in skills:
                         if not isinstance(entry, dict) or "skill_id" not in entry:
-                            if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                            if self.logger and self.logger.isEnabledFor(
+                                logging.WARNING
+                            ):
                                 self.logger.warning(
                                     f"Skipping invalid skill entry (missing skill_id): {entry}"
                                 )
@@ -248,7 +252,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             result = self.client.responses.create(**variables)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                invoke_time = (pendulum.now("UTC") - invoke_start).total_seconds() * 1000
+                invoke_time = (
+                    pendulum.now("UTC") - invoke_start
+                ).total_seconds() * 1000
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: API call returned (took {invoke_time:.2f}ms)"
@@ -260,7 +266,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 self.logger.error(f"Error invoking model: {str(e)}")
             raise Exception(f"Failed to invoke model: {str(e)}")
 
-    @performance_monitor.monitor_operation(operation_name="OpenAI")
+    # @performance_monitor.monitor_operation(operation_name="OpenAI")
     def ask_model(
         self,
         input_messages: List[Dict[str, Any]],
@@ -1594,9 +1600,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         Returns:
             Dictionary containing version details
         """
-        skill_version = self.client.skills.versions.retrieve(
-            version, skill_id=skill_id
-        )
+        skill_version = self.client.skills.versions.retrieve(version, skill_id=skill_id)
 
         return {
             "id": skill_version.id,
@@ -1684,9 +1688,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             "encoded_content": base64.b64encode(content).decode("utf-8"),
         }
 
-    def get_skill_version_content(
-        self, skill_id: str, version: str
-    ) -> Dict[str, Any]:
+    def get_skill_version_content(self, skill_id: str, version: str) -> Dict[str, Any]:
         """
         Download the binary bundle for a specific skill version.
 
