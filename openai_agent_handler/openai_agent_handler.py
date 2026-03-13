@@ -436,14 +436,6 @@ class OpenAIEventHandler(AIAgentEventHandler):
         """
         max_messages = self.agent.get("num_of_messages")
 
-        print("#" * 100)
-
-        print(
-            f"Input messages: {input_messages}, Max messages: {max_messages}, Max messages type: {type(max_messages)}, Index: {-max_messages}, Index type: {type(-max_messages)}"
-        )
-
-        print("#" * 100)
-
         if not max_messages or len(input_messages) <= max_messages:
             return input_messages
 
