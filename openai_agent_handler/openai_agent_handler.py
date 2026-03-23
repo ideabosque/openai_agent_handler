@@ -54,21 +54,18 @@ class OpenAIEventHandler(AIAgentEventHandler):
         try:
             AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
-            # Configure HTTP client with connection pooling and keep-alive for better performance
-            # This significantly reduces the connection setup time between consecutive API calls
             http_client = httpx.Client(
                 limits=httpx.Limits(
-                    max_connections=100,  # Allow up to 100 concurrent connections
-                    max_keepalive_connections=20,  # Keep 20 connections alive for reuse
-                    keepalive_expiry=30.0,  # Keep connections alive for 30 seconds
+                    max_connections=100,
+                    max_keepalive_connections=100,
+                    keepalive_expiry=120.0,
                 ),
                 timeout=httpx.Timeout(
                     120.0, connect=10.0
-                ),  # 10s connect, 120s total timeout
-                http2=True,  # Enable HTTP/2 for better performance
+                ),
+                http2=True,
             )
 
-            # Persist for reuse in file operations (insert_file, get_output_file)
             self.http_client = http_client
 
             self.client = openai.OpenAI(
