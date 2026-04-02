@@ -54,6 +54,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
         try:
             AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
+            self.shorten_initial_system_prompt = setting.get(
+                "shorten_initial_system_prompt", True
+            )
+
             # Configure HTTP client with connection pooling and keep-alive for better performance
             # This significantly reduces the connection setup time between consecutive API calls
             http_client = httpx.Client(
@@ -87,7 +91,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     ]
 
             # Build model settings with type conversions (performance optimization)
-            self.model_setting = {"instructions": self.agent["instructions"]}
+            self.model_setting = {}
             for k, v in self.agent["configuration"].items():
                 if k in ["openai_api_key"]:
                     continue
@@ -129,7 +133,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
             # Inline skills are not supported — use skill_reference with skill_id.
             if "skills" in self.model_setting:
                 skills = self.model_setting.pop("skills")
-                env_type = self.model_setting.pop("skills_environment", "container_auto")
+                env_type = self.model_setting.pop(
+                    "skills_environment", "container_auto"
+                )
 
                 if not isinstance(skills, list):
                     if self.logger and self.logger.isEnabledFor(logging.WARNING):
@@ -150,7 +156,9 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     skill_refs = []
                     for entry in skills:
                         if not isinstance(entry, dict) or "skill_id" not in entry:
-                            if self.logger and self.logger.isEnabledFor(logging.WARNING):
+                            if self.logger and self.logger.isEnabledFor(
+                                logging.WARNING
+                            ):
                                 self.logger.warning(
                                     f"Skipping invalid skill entry (missing skill_id): {entry}"
                                 )
@@ -223,6 +231,28 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return 0.0
         return (pendulum.now("UTC") - self._global_start_time).total_seconds() * 1000
 
+    def _get_system_instruction(self, message_count: int) -> str:
+        """
+        Return the appropriate system instruction based on conversation length.
+
+        Single message (first/single call) uses a lightweight prompt;
+        continuation calls (2+ messages) use the full agent instructions.
+
+        Args:
+            message_count: Total number of messages in the conversation
+
+        Returns:
+            The system instruction string
+        """
+        if message_count > 1:
+            return self.agent["instructions"]
+        if self.shorten_initial_system_prompt:
+            return (
+                f"You are a helpful {self.agent.get('agent_name', 'assistant')}"
+                f" with the instructions: {self.agent.get('agent_description', '')}."
+            )
+        return self.agent["instructions"]
+
     def reset_timeline(self) -> None:
         """
         Reset the global timeline for a new run.
@@ -245,10 +275,19 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 invoke_start = pendulum.now("UTC")
 
             variables = dict(self.model_setting, **kwargs)
+
+            # Adjust instructions based on conversation length:
+            # Single message (first call) uses a lightweight prompt;
+            # continuation calls use the full agent instructions.
+            messages = variables.get("input", [])
+            variables["instructions"] = self._get_system_instruction(len(messages))
+
             result = self.client.responses.create(**variables)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
-                invoke_time = (pendulum.now("UTC") - invoke_start).total_seconds() * 1000
+                invoke_time = (
+                    pendulum.now("UTC") - invoke_start
+                ).total_seconds() * 1000
                 elapsed = self._get_elapsed_time()
                 self.logger.info(
                     f"[TIMELINE] T+{elapsed:.2f}ms: API call returned (took {invoke_time:.2f}ms)"
@@ -773,9 +812,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
             {
                 "type": "function_call_output",
                 "call_id": function_call_data["call_id"],
-                "output": serialized_output
-                if serialized_output is not None
-                else Serializer.json_dumps(function_output),
+                "output": (
+                    serialized_output
+                    if serialized_output is not None
+                    else Serializer.json_dumps(function_output)
+                ),
             }
         )
 
@@ -1594,9 +1635,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
         Returns:
             Dictionary containing version details
         """
-        skill_version = self.client.skills.versions.retrieve(
-            version, skill_id=skill_id
-        )
+        skill_version = self.client.skills.versions.retrieve(version, skill_id=skill_id)
 
         return {
             "id": skill_version.id,
@@ -1684,9 +1723,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
             "encoded_content": base64.b64encode(content).decode("utf-8"),
         }
 
-    def get_skill_version_content(
-        self, skill_id: str, version: str
-    ) -> Dict[str, Any]:
+    def get_skill_version_content(self, skill_id: str, version: str) -> Dict[str, Any]:
         """
         Download the binary bundle for a specific skill version.
 
