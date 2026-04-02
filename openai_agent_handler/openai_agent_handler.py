@@ -54,6 +54,10 @@ class OpenAIEventHandler(AIAgentEventHandler):
         try:
             AIAgentEventHandler.__init__(self, logger, agent, **setting)
 
+            self.shorten_initial_system_prompt = setting.get(
+                "shorten_initial_system_prompt", True
+            )
+
             # Configure HTTP client with connection pooling and keep-alive for better performance
             # This significantly reduces the connection setup time between consecutive API calls
             http_client = httpx.Client(
@@ -87,7 +91,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                     ]
 
             # Build model settings with type conversions (performance optimization)
-            self.model_setting = {"instructions": self.agent["instructions"]}
+            self.model_setting = {}
             for k, v in self.agent["configuration"].items():
                 if k in ["openai_api_key"]:
                     continue
@@ -227,6 +231,28 @@ class OpenAIEventHandler(AIAgentEventHandler):
             return 0.0
         return (pendulum.now("UTC") - self._global_start_time).total_seconds() * 1000
 
+    def _get_system_instruction(self, message_count: int) -> str:
+        """
+        Return the appropriate system instruction based on conversation length.
+
+        Single message (first/single call) uses a lightweight prompt;
+        continuation calls (2+ messages) use the full agent instructions.
+
+        Args:
+            message_count: Total number of messages in the conversation
+
+        Returns:
+            The system instruction string
+        """
+        if message_count > 1:
+            return self.agent["instructions"]
+        if self.shorten_initial_system_prompt:
+            return (
+                f"You are a helpful {self.agent.get('agent_name', 'assistant')}"
+                f" with the instructions: {self.agent.get('agent_description', '')}."
+            )
+        return self.agent["instructions"]
+
     def reset_timeline(self) -> None:
         """
         Reset the global timeline for a new run.
@@ -249,6 +275,13 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 invoke_start = pendulum.now("UTC")
 
             variables = dict(self.model_setting, **kwargs)
+
+            # Adjust instructions based on conversation length:
+            # Single message (first call) uses a lightweight prompt;
+            # continuation calls use the full agent instructions.
+            messages = variables.get("input", [])
+            variables["instructions"] = self._get_system_instruction(len(messages))
+
             result = self.client.responses.create(**variables)
 
             if self.enable_timeline_log and self.logger.isEnabledFor(logging.INFO):
@@ -779,9 +812,11 @@ class OpenAIEventHandler(AIAgentEventHandler):
             {
                 "type": "function_call_output",
                 "call_id": function_call_data["call_id"],
-                "output": serialized_output
-                if serialized_output is not None
-                else Serializer.json_dumps(function_output),
+                "output": (
+                    serialized_output
+                    if serialized_output is not None
+                    else Serializer.json_dumps(function_output)
+                ),
             }
         )
 
