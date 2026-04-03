@@ -75,6 +75,8 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 api_key=self.agent.get("configuration", {}).get("openai_api_key"),
                 http_client=http_client,
             )
+            if self.agent.get("configuration", {}).get("base_url"):
+                self.client.base_url = self.agent["configuration"]["base_url"]
 
             if "enabled_tools" in self.agent["configuration"]:
                 # Filter tools using set-based membership for O(1) lookups
