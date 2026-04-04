@@ -93,7 +93,7 @@ class OpenAIEventHandler(AIAgentEventHandler):
                 "instructions": self.agent["instructions"],
             }
             for k, v in self.agent["configuration"].items():
-                if k in ["openai_api_key"]:
+                if k in ["openai_api_key", "base_url", "enabled_tools"]:
                     continue
 
                 if k == "max_output_tokens":
