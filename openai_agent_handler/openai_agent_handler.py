@@ -988,6 +988,12 @@ class OpenAIEventHandler(AIAgentEventHandler):
             stream_start_time = pendulum.now("UTC")
 
         for chunk in response_stream:
+            # Stop streaming if the client disconnected mid-generation.
+            if self.is_stream_cancelled():
+                self.logger.info(
+                    "Stream cancelled (client disconnected); stopping generation."
+                )
+                break
             if run_id is None:
                 run_id = chunk.response.id
             if chunk.type != "response.output_text.delta":
